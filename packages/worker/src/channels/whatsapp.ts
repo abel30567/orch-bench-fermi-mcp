@@ -3,7 +3,7 @@ import { logChannelMessage } from '../lib/conversation.ts'
 import { timingSafeEqual } from '../lib/crypto.ts'
 import { ackOutbox, enqueueOutbound, listPendingOutbox } from '../lib/outbox-store.ts'
 import { approvePairing } from '../lib/pairing.ts'
-import { enqueueTask } from '../lib/task-store.ts'
+import { enqueueTask, queueHookCtx } from '../lib/task-store.ts'
 
 interface WhatsAppInbound {
 	sender?: string
@@ -13,7 +13,11 @@ interface WhatsAppInbound {
 
 const APPROVE_COMMAND = /^\/approve\s+(\S+)/i
 
-export async function handleWhatsAppWebhook(request: Request, env: Env): Promise<Response> {
+export async function handleWhatsAppWebhook(
+	request: Request,
+	env: Env,
+	ctx?: ExecutionContext,
+): Promise<Response> {
 	// Fail closed: reject when the webhook secret is unset or the header mismatches.
 	const secret = env.WA_WEBHOOK_SECRET
 	const header = request.headers.get('x-wa-bridge-secret') ?? ''
@@ -53,12 +57,16 @@ export async function handleWhatsAppWebhook(request: Request, env: Env): Promise
 		// Group turn: attribute the speaker, enqueue, no /approve, no ack.
 		const attribution = `[${sender}] `
 		await logChannelMessage(env.FERMI_DB, 'wa', chatId, 'user', attribution + text)
-		await enqueueTask(env.FERMI_DB, {
-			channel: 'wa',
-			sender,
-			chatId,
-			payload: attribution + text,
-		})
+		await enqueueTask(
+			env.FERMI_DB,
+			{
+				channel: 'wa',
+				sender,
+				chatId,
+				payload: attribution + text,
+			},
+			queueHookCtx(env, ctx),
+		)
 		return new Response('ok')
 	}
 
@@ -78,7 +86,11 @@ export async function handleWhatsAppWebhook(request: Request, env: Env): Promise
 	// Gateway: log the turn, enqueue for the local daemon, ack. The bridge wakes
 	// its own daemon on 200, so no push-wake is needed here.
 	await logChannelMessage(env.FERMI_DB, 'wa', chatId, 'user', text)
-	await enqueueTask(env.FERMI_DB, { channel: 'wa', sender, chatId, payload: text })
+	await enqueueTask(
+		env.FERMI_DB,
+		{ channel: 'wa', sender, chatId, payload: text },
+		queueHookCtx(env, ctx),
+	)
 	await sendWhatsAppMessage(env, chatId, 'Got it — working on it.')
 	return new Response('ok')
 }
