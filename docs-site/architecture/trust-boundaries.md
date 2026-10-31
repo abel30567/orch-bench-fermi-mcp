@@ -8,7 +8,7 @@ Where credentials live, where they stop, and what each boundary is worth. Number
 
 ## Layer 2 — The tool guardrail pipeline
 
-Plan-mode mutation block → approval gate for `risk: high` (single-use token, 300s) → deny-hooks → audit. *Enforcement: `lib/tool.ts`.* Honest note: approval redemption checks token existence, not argument equality.
+Plan-mode mutation block → approval gate for `risk: high` (single-use token, 300s) → deny-hooks → audit. *Enforcement: `lib/tool.ts`.* Approval redemption requires the token's stored tool and args hash to match the call.
 
 ## Layer 3 — Secret custody
 
