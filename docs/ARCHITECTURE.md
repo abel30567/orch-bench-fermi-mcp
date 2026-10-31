@@ -139,12 +139,13 @@ The guardrail pipeline, in order:
       │
       ▼
   2. APPROVAL GATE  (only when risk == "high")
-     No token  → mint UUID token, store {tool, args_hash} in KV (TTL 300s),
-                 audit "pending", return pending_approval to the caller
-     Token     → must exist in KV AND its stored tool == this tool AND its
-                 stored args_hash == hash(args without approval_token);
-                 otherwise audit "denied", invalid_or_expired_token (the token
-                 is left in place). On a match: delete it (single use) → continue
+     No token  → mint UUID token, store {tool, args_hash, expires_at = now+300s}
+                 in D1 approval_tokens, audit "pending", return pending_approval
+     Token     → one atomic conditional DELETE: row exists AND not expired AND
+                 its tool == this tool AND args_hash == hash(args without
+                 approval_token). No row deleted → audit "denied",
+                 invalid_or_expired_token (the token is left in place).
+                 Deleted → continue (single use, even under concurrent redeems)
       │
       ▼
   3. PRE-HOOKS  ("tool:before")
@@ -404,9 +405,9 @@ that step rather than fail.
 
 | Store | Binding | Holds |
 |-------|---------|-------|
-| D1 | `FERMI_DB` | memory, sessions, messages + `messages_fts`, audit log, hooks, `team_spawns`, skills metadata, secrets metadata, connectors, packages, retrievers, OAuth clients/grants |
+| D1 | `FERMI_DB` | memory, sessions, messages + `messages_fts`, audit log, approval tokens, hooks, `team_spawns`, skills metadata, secrets metadata, connectors, packages, retrievers, OAuth clients/grants |
 | R2 | `FERMI_BUCKET` | SKILL.md bodies, `fs_*` user files, `/apps/*` static assets, seeds |
-| KV | `FERMI_KV` | runtime config (daily-brief channel/chat), approval tokens, `team:max_concurrent`, allow-lists |
+| KV | `FERMI_KV` | runtime config (daily-brief channel/chat), `team:max_concurrent`, allow-lists |
 | KV | `OAUTH_KV` | OAuth tokens/grants for the provider |
 | Workers AI | `AI` | `bge-small-en-v1.5` embeddings; Llama 3.1-8B summaries and channel inference fallback |
 | Vectorize | `FERMI_VECTORIZE` | `capability:*` and `skill:*` vectors |

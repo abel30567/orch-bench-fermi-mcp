@@ -43,6 +43,8 @@ export interface AgentLikeState {
 	sessionId?: string
 }
 
+const APPROVAL_TOKEN_TTL_MS = 300_000
+
 export type ApprovalPolicy = 'pending_token' | 'require_token' | 'none'
 
 export type GuardrailResult<R> =
@@ -101,11 +103,13 @@ export async function runWithGuardrails<R>(
 				}
 			}
 			const token = crypto.randomUUID()
-			await env.FERMI_KV.put(
-				`approval:${token}`,
-				JSON.stringify({ tool: def.name, args_hash: argsHash }),
-				{ expirationTtl: 300 },
-			)
+			const now = Date.now()
+			await env.FERMI_DB.batch([
+				env.FERMI_DB.prepare('DELETE FROM approval_tokens WHERE expires_at <= ?').bind(now),
+				env.FERMI_DB.prepare(
+					'INSERT INTO approval_tokens (token, tool, args_hash, expires_at) VALUES (?, ?, ?, ?)',
+				).bind(token, def.name, argsHash, now + APPROVAL_TOKEN_TTL_MS),
+			])
 			await writeAudit(env.FERMI_DB, {
 				tool: def.name,
 				args_hash: argsHash,
@@ -117,11 +121,14 @@ export async function runWithGuardrails<R>(
 
 		// A token is bound to the exact tool and args it was minted for. `args` never
 		// carries approval_token (defineTool strips it), so the hashes are comparable.
-		const stored = await env.FERMI_KV.get<{ tool: string; args_hash: string }>(
-			`approval:${approvalToken}`,
-			'json',
+		// One conditional DELETE is the redemption: D1 serialises writes, so of any
+		// number of concurrent redeems exactly one sees changes === 1.
+		const redeemed = await env.FERMI_DB.prepare(
+			'DELETE FROM approval_tokens WHERE token = ? AND tool = ? AND args_hash = ? AND expires_at > ?',
 		)
-		if (!stored || stored.tool !== def.name || stored.args_hash !== argsHash) {
+			.bind(approvalToken, def.name, argsHash, Date.now())
+			.run()
+		if (redeemed.meta.changes !== 1) {
 			await writeAudit(env.FERMI_DB, {
 				tool: def.name,
 				args_hash: argsHash,
@@ -130,7 +137,6 @@ export async function runWithGuardrails<R>(
 			})
 			return { kind: 'denied', reason: 'invalid_or_expired_token' }
 		}
-		await env.FERMI_KV.delete(`approval:${approvalToken}`)
 	}
 
 	const hookCtx = { tool: def.name, args }
