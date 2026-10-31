@@ -286,17 +286,24 @@ const defaultHandler = {
 				})
 			}
 			const agents = await listCloudAgents(env.FERMI_DB, { limit: 50 })
+			// Per-route API health (#47): `unavailable` when the last N ended agents
+			// on a route all failed with the same harness api_error status. Claude is
+			// split per account: `claude` is the default, `claude:<account>` each alternate.
+			const routes: Record<string, ReturnType<typeof routeHealth>> = {
+				claude: routeHealth(agents, 'claude'),
+				codex: routeHealth(agents, 'codex'),
+				grok: routeHealth(agents, 'grok'),
+			}
+			for (const a of agents) {
+				if (a.route === 'claude' && a.account && !routes[`claude:${a.account}`]) {
+					routes[`claude:${a.account}`] = routeHealth(agents, 'claude', a.account)
+				}
+			}
 			return Response.json({
 				ok: true,
 				agents,
 				boxes: await listBoxes(env.FERMI_DB, { limit: 50 }),
-				// Per-route API health (#47): `unavailable` when the last N ended agents
-				// on a route all failed with the same harness api_error status.
-				routes: {
-					claude: routeHealth(agents, 'claude'),
-					codex: routeHealth(agents, 'codex'),
-					grok: routeHealth(agents, 'grok'),
-				},
+				routes,
 			})
 		}
 
