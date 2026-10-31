@@ -77,6 +77,13 @@ export const cloudAgentLaunchSchema = {
 		.string()
 		.optional()
 		.describe('Parent task id when this launch is part of a fan-out'),
+	account: z
+		.string()
+		.regex(/^[a-z][a-z0-9_]{0,31}$/)
+		.optional()
+		.describe(
+			'Alternate Claude account (claude route only); its token must be stored as the CLAUDE_CODE_OAUTH_TOKEN_<ACCOUNT> secret. Defaults to the standard account.',
+		),
 	instance_type: z
 		.string()
 		.optional()

@@ -5,9 +5,10 @@ import {
 	monthSpendUsd,
 	resolveInstanceType,
 } from './fleet-config.ts'
-import { createCloudAgent, getBox } from './fleet-store.ts'
+import { ACCOUNT_RE, accountSecretName, createCloudAgent, getBox } from './fleet-store.ts'
 import { parseProofContract } from './proof-contract.ts'
 import { type ProvisionOutcome, dispatchProvision } from './provisioner.ts'
+import { getSecret } from './secrets-store.ts'
 import { enqueueTask } from './task-store.ts'
 
 export interface LaunchInput {
@@ -25,6 +26,8 @@ export interface LaunchInput {
 	parent_task_id?: string
 	/** EC2 size for this launch; must be in fleet:config.allowed_instance_types (#43). */
 	instance_type?: string
+	/** Alternate Claude account (claude route only); token in CLAUDE_CODE_OAUTH_TOKEN_<ACCOUNT>. */
+	account?: string | null
 }
 
 export type LaunchResult =
@@ -40,6 +43,19 @@ export type LaunchResult =
 
 /** Single launch path shared by the MCP tool and the admin endpoint. */
 export async function launchCloudAgent(env: Env, input: LaunchInput): Promise<LaunchResult> {
+	if (input.account != null) {
+		if ((input.route ?? 'claude') !== 'claude') {
+			return { ok: false, error: 'account_requires_claude_route', route: input.route }
+		}
+		if (typeof input.account !== 'string' || !ACCOUNT_RE.test(input.account)) {
+			return { ok: false, error: 'invalid_account' }
+		}
+		const secretName = accountSecretName(input.account)
+		if (!(await getSecret(secretName, 'app', '', env))) {
+			return { ok: false, error: 'account_token_not_configured', missing: secretName }
+		}
+	}
+
 	// #36: new launches must carry a structured, mechanically-checkable
 	// contract — free text is judged by an LLM and was vacuously satisfiable.
 	const proof = parseProofContract(input.proof_contract)
@@ -108,6 +124,7 @@ export async function launchCloudAgent(env: Env, input: LaunchInput): Promise<La
 		budgetUsd: input.budget_usd,
 		ttlSeconds: input.ttl_seconds,
 		instanceType: input.box_id ? undefined : sizing.instance_type,
+		account: input.account ?? undefined,
 	})
 	const provision = await dispatchProvision(env, created)
 	// If no compute was dispatched (provisioner error, not a targeted box), free
