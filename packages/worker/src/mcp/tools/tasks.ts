@@ -15,7 +15,7 @@ export function registerTaskTools(agent: FermiMCP) {
 	defineTool(agent, {
 		name: 'task_enqueue',
 		description:
-			'Add a task to the channel task queue. Channel webhooks enqueue automatically; use this for manual or agent-initiated work items.',
+			'Add a task to the channel task queue. Channel webhooks enqueue automatically; use this for manual or agent-initiated work items. To hand work to Grok Bot, use queue "grok-bot", channel "cloud" and a JSON payload { v: 1, ask, context, repo?, expected_output, deadline_min }.',
 		schema: {
 			channel: z.enum(['tg', 'wa', 'dc', 'sl', 'cloud']).describe('Channel the task belongs to'),
 			sender: z.string().describe('Channel-specific sender id'),
@@ -34,14 +34,18 @@ export function registerTaskTools(agent: FermiMCP) {
 		risk: 'low',
 		mutates: true,
 		handler: async (args, env) => {
-			const created = await enqueueTask(env.FERMI_DB, {
-				channel: args.channel,
-				sender: args.sender,
-				chatId: args.chat_id,
-				payload: args.payload,
-				queue: args.queue,
-				parentTaskId: args.parent_task_id,
-			})
+			const created = await enqueueTask(
+				env.FERMI_DB,
+				{
+					channel: args.channel,
+					sender: args.sender,
+					chatId: args.chat_id,
+					payload: args.payload,
+					queue: args.queue,
+					parentTaskId: args.parent_task_id,
+				},
+				{ env },
+			)
 			return { content: [{ type: 'text' as const, text: JSON.stringify(created) }] }
 		},
 	})
@@ -170,7 +174,7 @@ export function registerTaskTools(agent: FermiMCP) {
 	defineTool(agent, {
 		name: 'task_wait',
 		description:
-			'Wait for a task to reach done/failed, or time out. Lets an orchestrator await a completion instead of polling by hand. Returns status and result.',
+			'Wait for a task to reach done/failed, or time out. Lets an orchestrator await a completion instead of polling by hand. Returns status and result. For work longer than timeout_seconds, call again with the same id until the status is no longer timeout.',
 		schema: {
 			id: z.string().describe('Task id to wait on'),
 			timeout_seconds: z

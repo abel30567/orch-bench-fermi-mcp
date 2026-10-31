@@ -32,7 +32,11 @@ function hostAllowed(site: string, url: string): boolean {
 	}
 }
 
-export async function handleBoxBrowserRpc(request: Request, env: Env): Promise<Response> {
+export async function handleBoxBrowserRpc(
+	request: Request,
+	env: Env,
+	ctx?: ExecutionContext,
+): Promise<Response> {
 	const box = await authBox(request, env)
 	if (!box) return new Response('Unauthorized', { status: 401 })
 	const body = (await request.json().catch(() => ({}))) as {
@@ -78,20 +82,24 @@ export async function handleBoxBrowserRpc(request: Request, env: Env): Promise<R
 		return Response.json({ ok: false, error: 'origin_not_allowed' }, { status: 403 })
 	}
 
-	const op = await enqueueTask(env.FERMI_DB, {
-		channel: 'broker',
-		sender: `box:${box.box_id}`,
-		chatId: 'broker',
-		queue: BROKER_QUEUE,
-		payload: JSON.stringify({
-			session: body.session,
-			site: meta.site,
-			op: body.op,
-			args: body.args ?? {},
-			box_id: box.box_id,
-			agent_id: agentId,
-		}),
-	})
+	const op = await enqueueTask(
+		env.FERMI_DB,
+		{
+			channel: 'broker',
+			sender: `box:${box.box_id}`,
+			chatId: 'broker',
+			queue: BROKER_QUEUE,
+			payload: JSON.stringify({
+				session: body.session,
+				site: meta.site,
+				op: body.op,
+				args: body.args ?? {},
+				box_id: box.box_id,
+				agent_id: agentId,
+			}),
+		},
+		{ env, ctx },
+	)
 	return Response.json({ ok: true, op_id: op.id })
 }
 
