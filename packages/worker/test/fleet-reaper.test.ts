@@ -244,6 +244,22 @@ describe('budget enforcement', () => {
 		expect(outcome).toMatchObject({ dispatched: false, reason: 'no_environment_configured' })
 	})
 
+	it('dispatchProvision refuses a corrupt runner manifest even with a valid single-file pin', async () => {
+		await env.FERMI_KV.put(
+			'fleet:config',
+			JSON.stringify({
+				runner_ref: 'a'.repeat(40),
+				runner_sha256: 'b'.repeat(64),
+				runner_files: { 'lib/util.mjs': 'b'.repeat(64) },
+			}),
+		)
+		const outcome = await dispatchProvision(
+			env,
+			agent({ id: 'ca_badpin', queue: 'agent:ca_badpin', created_at: Date.now() }),
+		)
+		expect(outcome).toMatchObject({ dispatched: false, reason: 'runner_pin_unset' })
+	})
+
 	it('dispatchProvision does not provision when an existing box is targeted', async () => {
 		const outcome = await dispatchProvision(env, agent({ id: 'ca_pw', box_id: 'box-mac' }))
 		expect(outcome).toMatchObject({ dispatched: false, reason: 'existing_box_targeted' })
