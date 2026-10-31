@@ -86,6 +86,21 @@ function getToolDefinitions(): Tool[] {
 }
 
 /**
+ * The curated tool set, narrowed to `allowedTools` when given (curated order kept).
+ * Throws when `allowedTools` names a tool outside the curated set.
+ */
+export function selectToolDefinitions(allowedTools?: string[]): Tool[] {
+	const tools = getToolDefinitions()
+	if (!allowedTools) return tools
+	const curated = tools.map((t) => t.name)
+	const unknown = allowedTools.filter((name) => !curated.includes(name))
+	if (unknown.length > 0) {
+		throw new Error(`Unknown allowed_tools: ${unknown.join(', ')}. Known: ${curated.join(', ')}`)
+	}
+	return tools.filter((t) => allowedTools.includes(t.name))
+}
+
+/**
  * Execute a tool by name against environment bindings directly,
  * bypassing the MCP server registration.
  */
@@ -170,7 +185,10 @@ export async function runAgentTurn(
 	message: string,
 	env: Env,
 	_channel: ChannelContext,
+	opts: { allowedTools?: string[] } = {},
 ): Promise<string> {
+	const tools = selectToolDefinitions(opts.allowedTools)
+
 	// Budget check — fallback to Workers AI if over budget
 	if (await isOverBudget(env.FERMI_KV)) {
 		return runWorkersFallback(message, env)
@@ -182,7 +200,6 @@ export async function runAgentTurn(
 	}
 
 	const client = new Anthropic({ apiKey, baseURL: apiBase(env, 'ANTHROPIC_API_BASE') })
-	const tools = getToolDefinitions()
 	const messages: MessageParam[] = [{ role: 'user', content: message }]
 
 	const MAX_TURNS = 8
@@ -207,11 +224,10 @@ export async function runAgentTurn(
 			const toolResults: ToolResultBlockParam[] = []
 			for (const block of response.content) {
 				if (block.type === 'tool_use') {
-					const result = await executeToolByName(
-						block.name,
-						block.input as Record<string, unknown>,
-						env,
-					)
+					// The model may only run tools it was offered.
+					const result = tools.some((t) => t.name === block.name)
+						? await executeToolByName(block.name, block.input as Record<string, unknown>, env)
+						: JSON.stringify({ error: `Tool not allowed: ${block.name}` })
 					toolResults.push({
 						type: 'tool_result',
 						tool_use_id: block.id,
