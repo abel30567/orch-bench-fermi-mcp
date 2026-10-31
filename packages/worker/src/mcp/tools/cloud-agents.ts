@@ -9,6 +9,7 @@ import {
 	heartbeatBox,
 	listBoxes,
 	listCloudAgents,
+	liveDestroyReason,
 	scrubBoxToken,
 	updateBox,
 	updateCloudAgent,
@@ -224,10 +225,13 @@ export function registerCloudAgentTools(agent: FermiMCP) {
 	defineTool(agent, {
 		name: 'cloud_agent_destroy',
 		description:
-			'Mark a cloud agent destroyed and dispatch compute teardown (instance termination, credential revocation). Irreversible.',
+			'Mark a cloud agent destroyed and dispatch compute teardown (instance termination, credential revocation). An agent that already ended keeps its end time and exit reason. Irreversible.',
 		schema: {
 			id: z.string().describe('Cloud agent id'),
-			reason: z.string().optional().describe('Why the agent is being destroyed'),
+			reason: z
+				.string()
+				.optional()
+				.describe('Why the agent is being destroyed; ignored if it already ended'),
 		},
 		scope: ['write:fleet'],
 		risk: 'high',
@@ -236,11 +240,13 @@ export function registerCloudAgentTools(agent: FermiMCP) {
 			const row = await getCloudAgent(env.FERMI_DB, args.id)
 			if (!row) return json({ ok: false, error: 'not_found' })
 			if (row.status === 'destroyed') return json({ ok: false, error: 'already_destroyed' })
-			await updateCloudAgent(env.FERMI_DB, args.id, {
-				status: 'destroyed',
-				endedAt: Date.now(),
-				exitReason: args.reason ?? 'destroyed_by_operator',
-			})
+			// Cleaning up a finished agent must not rewrite how and when it ended:
+			// route health reads that outcome.
+			const ending =
+				row.ended_at == null
+					? { endedAt: Date.now(), exitReason: liveDestroyReason(args.reason) }
+					: {}
+			await updateCloudAgent(env.FERMI_DB, args.id, { status: 'destroyed', ...ending })
 			if (row.box_id) {
 				await updateBox(env.FERMI_DB, row.box_id, {
 					status: 'destroyed',

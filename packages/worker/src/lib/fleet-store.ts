@@ -321,8 +321,15 @@ export interface RouteHealth {
 	since: number | null
 }
 
+/** Exit reason for destroying a live agent. Free text, so it must not read as a
+ * runner api_error: that exit reason on a destroyed agent means it failed first. */
+export function liveDestroyReason(reason = 'destroyed_by_operator'): string {
+	return API_ERROR_REASON.test(reason) ? `destroyed: ${reason}` : reason
+}
+
 function apiErrorStatus(agent: RouteHealthAgent): number | null {
-	if (agent.status !== 'failed') return null
+	// `destroyed` too: cleaning up a failed agent keeps its exit reason.
+	if (agent.status !== 'failed' && agent.status !== 'destroyed') return null
 	const match = agent.exit_reason?.match(API_ERROR_REASON)
 	return match ? Number(match[1]) : null
 }
@@ -330,7 +337,8 @@ function apiErrorStatus(agent: RouteHealthAgent): number | null {
 /**
  * Walks a route's ended agents newest first. The streak is the run of failures
  * sharing the newest agent's api_error status, so anything else ends it: a
- * success, a non-API failure, or an api_error with a different status.
+ * success, a non-API failure, an api_error with a different status, or a live
+ * agent being destroyed.
  */
 export function routeHealth(
 	agents: RouteHealthAgent[],

@@ -82,7 +82,7 @@ cloud_agent_stop / destroy # manual kill switch
 
 Liveness is on the agent record, not in the event log: `last_heartbeat_at` (runner check-in), `last_working_event_at` (last harness progress note), `restart_count`, `instance_type`. The reaper fails an agent `runner_stalled` and terminates its box when heartbeats go stale, and the box gateway fails it `runner_restarted` when a pre-resume runner announces a fresh boot over held work — in both cases the work task fails too, so `task_wait` returns instead of hanging until TTL.
 
-Route health is on `GET /admin/fleet/status`: the `routes` block reports `unavailable`, `consecutive_api_errors`, `api_error_status`, `last_error` and `since` for each route. A route is `unavailable` when its 3 most recently ended agents all failed with the same `harness api_error <status>` exit reason (spend cap, 429, auth), so stop relaunching into it until the cause is fixed. Any other outcome ends the streak, including an api_error with a different status or an operator destroy.
+Route health is on `GET /admin/fleet/status`: the `routes` block reports `unavailable`, `consecutive_api_errors`, `api_error_status`, `last_error` and `since` for each route. A route is `unavailable` when its 3 most recently ended agents all failed with the same `harness api_error <status>` exit reason (spend cap, 429, auth), so stop relaunching into it until the cause is fixed. Any other outcome ends the streak, including an api_error with a different status or destroying a live agent. Destroying an agent that already ended is cleanup: it keeps its end time and exit reason, so it does not change the route's health.
 
 ## Failure modes
 
