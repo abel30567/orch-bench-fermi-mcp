@@ -162,6 +162,14 @@ async function executeToolByName(
 	}
 }
 
+/** Names of the curated tools the inference loop can offer a model. */
+export const CURATED_TOOL_NAMES: readonly string[] = getToolDefinitions().map((t) => t.name)
+
+export interface AgentTurnOptions {
+	/** Restrict the offered tools to these curated tool names. Unset means all curated tools. */
+	allowedTools?: string[]
+}
+
 /**
  * Run a full agent turn using the Anthropic Messages API with tool use.
  * Falls back to Workers AI when over budget.
@@ -170,6 +178,7 @@ export async function runAgentTurn(
 	message: string,
 	env: Env,
 	_channel: ChannelContext,
+	options: AgentTurnOptions = {},
 ): Promise<string> {
 	// Budget check — fallback to Workers AI if over budget
 	if (await isOverBudget(env.FERMI_KV)) {
@@ -182,7 +191,11 @@ export async function runAgentTurn(
 	}
 
 	const client = new Anthropic({ apiKey, baseURL: apiBase(env, 'ANTHROPIC_API_BASE') })
-	const tools = getToolDefinitions()
+	const allowed = options.allowedTools
+	const tools = allowed
+		? getToolDefinitions().filter((t) => allowed.includes(t.name))
+		: getToolDefinitions()
+	const offered = new Set(tools.map((t) => t.name))
 	const messages: MessageParam[] = [{ role: 'user', content: message }]
 
 	const MAX_TURNS = 8
@@ -192,7 +205,7 @@ export async function runAgentTurn(
 			model: 'claude-haiku-4-5-20251001',
 			max_tokens: 4096,
 			system: SYSTEM_PROMPT,
-			tools,
+			...(tools.length > 0 ? { tools } : {}),
 			messages,
 		})
 
@@ -207,11 +220,9 @@ export async function runAgentTurn(
 			const toolResults: ToolResultBlockParam[] = []
 			for (const block of response.content) {
 				if (block.type === 'tool_use') {
-					const result = await executeToolByName(
-						block.name,
-						block.input as Record<string, unknown>,
-						env,
-					)
+					const result = offered.has(block.name)
+						? await executeToolByName(block.name, block.input as Record<string, unknown>, env)
+						: JSON.stringify({ error: `Tool not allowed: ${block.name}` })
 					toolResults.push({
 						type: 'tool_result',
 						tool_use_id: block.id,
