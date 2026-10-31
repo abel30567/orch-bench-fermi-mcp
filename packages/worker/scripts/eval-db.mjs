@@ -8,6 +8,55 @@ const sql = (value) => {
 	return `'${String(value).replaceAll("'", "''")}'`
 }
 
+const HISTORY_CHANNELS = ['tg', 'wa', 'dc', 'sl']
+
+/**
+ * Conversation history as the conversation store writes it: one open
+ * `<channel>:<chat_id>` session (see channelHost, createSession) and one messages
+ * row per turn (see logChannelMessage, logMessage), oldest first. The FTS index
+ * fills through the messages_ai trigger. `sender` is a group speaker: user turns
+ * get the channels' `[sender] ` attribution; a DM fixture omits it.
+ */
+function historyStatements({ history, channel, chat_id, sender }, now) {
+	// plans and team_spawns reference sessions, so they go before it.
+	const out = [
+		'DELETE FROM messages',
+		'DELETE FROM plans',
+		'DELETE FROM team_spawns',
+		'DELETE FROM sessions',
+	]
+	if (history.length === 0) return out
+	if (!HISTORY_CHANNELS.includes(channel)) {
+		throw new Error(`history needs channel to be one of ${HISTORY_CHANNELS}, got ${channel}`)
+	}
+	if (typeof chat_id !== 'string' || !chat_id) throw new Error('history needs a chat_id string')
+	if (sender !== undefined && (typeof sender !== 'string' || !sender)) {
+		throw new Error('history sender must be a non-empty string')
+	}
+	for (const t of history) {
+		const valid =
+			(t.role === 'user' || t.role === 'assistant') &&
+			typeof t.text === 'string' &&
+			Number.isFinite(t.minutes_ago) &&
+			t.minutes_ago >= 0
+		if (!valid) throw new Error(`invalid history turn: ${JSON.stringify(t)}`)
+	}
+	const turns = history
+		.map((t) => ({ ...t, created_at: now - Math.round(t.minutes_ago * 60_000) }))
+		.sort((a, b) => a.created_at - b.created_at)
+	const sessionId = crypto.randomUUID()
+	out.push(
+		`INSERT INTO sessions (id, host, mode, started_at) VALUES (${sql(sessionId)}, ${sql(`${channel}:${chat_id}`)}, 'chat', ${turns[0].created_at})`,
+	)
+	for (const t of turns) {
+		const body = t.role === 'user' && sender ? `[${sender}] ${t.text}` : t.text
+		out.push(
+			`INSERT INTO messages (session_id, role, body, created_at) VALUES (${sql(sessionId)}, ${sql(t.role)}, ${sql(body)}, ${t.created_at})`,
+		)
+	}
+	return out
+}
+
 /**
  * Statements that replace the eval-relevant state with the fixture's. Tables
  * the fixture names are cleared first, so a re-seed leaves exactly the fixture.
@@ -46,6 +95,7 @@ export function seedStatements(fixture, now = Date.now()) {
 			)
 		}
 	}
+	if (fixture.history) out.push(...historyStatements(fixture, now))
 	return out
 }
 
@@ -61,6 +111,9 @@ export const DUMP_QUERIES = {
 	skills:
 		'SELECT slug, name, description, keywords, allowed_tools, version, source, decayed_at FROM skills ORDER BY slug',
 	audit: 'SELECT * FROM audit ORDER BY id',
+	history: `SELECT s.host, m.role, m.body, m.created_at
+		FROM messages m JOIN sessions s ON m.session_id = s.id
+		ORDER BY m.created_at, m.id`,
 }
 
 /** Shape rows (one array per DUMP_QUERIES entry, same order) like a fixture. */
@@ -69,6 +122,10 @@ export function shapeDump(rowSets) {
 	const dump = Object.fromEntries(names.map((name, i) => [name, rowSets[i] ?? []]))
 	dump.profile = Object.fromEntries(dump.profile.map((r) => [r.name, r.body]))
 	dump.memories = dump.memories.map((m) => ({ ...m, pinned: m.pinned === 1 }))
+	dump.history = dump.history.map(({ host, role, body, created_at }) => {
+		const [channel, ...chatId] = host.split(':')
+		return { channel, chat_id: chatId.join(':'), role, text: body, created_at }
+	})
 	return dump
 }
 

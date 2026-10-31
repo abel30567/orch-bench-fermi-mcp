@@ -171,8 +171,18 @@ Channel bindings, such as the Slack finance channel mapping to `household-financ
 daemon prompt rules rather than worker state, so a fixture only seeds the skill and the
 allowlist.
 
-`eval-dump` prints profile, memories, allowlist, tasks, outbox, schedules, skill metadata
-and audit as JSON. It reads D1 only. Phone calls are kept in each `PhoneCallDO`, not in
+A fixture with `history` (see `test/fixtures/eval/history.json`) also replaces every
+conversation. `history: [{ role, text, minutes_ago }]` goes with the scenario's inbound
+`channel` (`tg`, `wa`, `dc` or `sl`) and `chat_id`, and is written to the same `sessions`
+and `messages` tables as `logChannelMessage`: one open session for the chat, with
+timestamps computed back from seed time, so `context_bootstrap`, `conversation_history`
+and `session_search` return the turns as in production. An optional `sender` names a
+group speaker: user turns get the `[sender] ` attribution group turns have in production.
+Omit it for a DM. Replacing conversations also clears `plans` and `team_spawns`, which
+reference sessions.
+
+`eval-dump` prints profile, memories, allowlist, tasks, outbox, schedules, skill metadata,
+audit and history (`{ channel, chat_id, role, text, created_at }`) as JSON. It reads D1 only. Phone calls are kept in each `PhoneCallDO`, not in
 D1, so evals assert on them from the fake Twilio log (via `TWILIO_API_BASE`) and the
 harness trace.
 
