@@ -1,6 +1,7 @@
 import { accruedCostUsd } from '../lib/fleet-config.ts'
 import type { BoxRow } from '../lib/fleet-store.ts'
 import {
+	accountSecretName,
 	getBox,
 	getCloudAgent,
 	heartbeatBox,
@@ -226,6 +227,14 @@ export async function handleBoxInferenceAuth(request: Request, env: Env): Promis
 	if (!agent) return Response.json({ ok: false, error: 'box_has_no_agent' }, { status: 400 })
 
 	const names = [...(ROUTE_SECRETS[agent.route] ?? [])]
+	// Alternate Claude account: read CLAUDE_CODE_OAUTH_TOKEN_<ACCOUNT> but serve
+	// it under the standard name, so the box runner needs no account awareness.
+	const aliases: Record<string, string> = {}
+	if (agent.route === 'claude' && agent.account) {
+		const source = accountSecretName(agent.account)
+		aliases[source] = 'CLAUDE_CODE_OAUTH_TOKEN'
+		names.splice(names.indexOf('CLAUDE_CODE_OAUTH_TOKEN'), 1, source)
+	}
 
 	// Repo credentials are least-privilege: only missions whose task payload
 	// names a repo get GITHUB_TOKEN.
@@ -242,7 +251,7 @@ export async function handleBoxInferenceAuth(request: Request, env: Env): Promis
 	const missing: string[] = []
 	for (const name of names) {
 		const secret = await getSecret(name, 'app', '', env)
-		if (secret) values[name] = secret.value
+		if (secret) values[aliases[name] ?? name] = secret.value
 		else missing.push(name)
 	}
 	if (missing.length > 0) {

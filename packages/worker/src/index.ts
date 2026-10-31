@@ -144,6 +144,7 @@ const defaultHandler = {
 			const body = (await request.json().catch(() => null)) as {
 				prompt?: string
 				proof_contract?: string
+				account?: string
 			} | null
 			if (!body || typeof body.prompt !== 'string' || typeof body.proof_contract !== 'string') {
 				return Response.json(
@@ -296,6 +297,17 @@ const defaultHandler = {
 					claude: routeHealth(agents, 'claude'),
 					codex: routeHealth(agents, 'codex'),
 					grok: routeHealth(agents, 'grok'),
+					// Per-account claude health, so one exhausted subscription never
+					// hides (or poisons) the others.
+					...Object.fromEntries(
+						[
+							...new Set(
+								agents
+									.filter((a) => a.route === 'claude' && a.account)
+									.map((a) => a.account as string),
+							),
+						].map((account) => [`claude:${account}`, routeHealth(agents, 'claude', account)]),
+					),
 				},
 			})
 		}
