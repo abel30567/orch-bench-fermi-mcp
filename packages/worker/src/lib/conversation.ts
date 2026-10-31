@@ -21,15 +21,17 @@ export async function getOrCreateChannelSession(
 	return createSession(db, host)
 }
 
+/** createdAt defaults to now; eval-seed passes it to backdate fixture history. */
 export async function logChannelMessage(
 	db: D1Database,
 	channel: string,
 	chatId: string,
 	role: 'user' | 'assistant',
 	body: string,
+	createdAt?: number,
 ): Promise<void> {
 	const sessionId = await getOrCreateChannelSession(db, channel, chatId)
-	await logMessage(db, sessionId, role, body)
+	await logMessage(db, sessionId, role, body, createdAt)
 }
 
 export interface ConversationRow {
