@@ -42,12 +42,16 @@ export async function handleDiscordWebhook(request: Request, env: Env): Promise<
 		// own daemon on 200, so no push-wake is needed here.
 		const attribution = `[${body.display_name ?? authorId}] `
 		await logChannelMessage(env.FERMI_DB, 'dc', chatId, 'user', attribution + text)
-		await enqueueTask(env.FERMI_DB, {
-			channel: 'dc',
-			sender: authorId,
-			chatId,
-			payload: attribution + text,
-		})
+		await enqueueTask(
+			env.FERMI_DB,
+			{
+				channel: 'dc',
+				sender: authorId,
+				chatId,
+				payload: attribution + text,
+			},
+			{ env },
+		)
 		return new Response('ok')
 	}
 
@@ -82,7 +86,11 @@ export async function handleDiscordWebhook(request: Request, env: Env): Promise<
 
 	// Gateway: log the turn, enqueue for the local daemon, ack.
 	await logChannelMessage(env.FERMI_DB, 'dc', chatId, 'user', text)
-	await enqueueTask(env.FERMI_DB, { channel: 'dc', sender: authorId, chatId, payload: text })
+	await enqueueTask(
+		env.FERMI_DB,
+		{ channel: 'dc', sender: authorId, chatId, payload: text },
+		{ env },
+	)
 	await sendDiscordMessage(env, chatId, 'Got it — working on it.')
 	return new Response('ok')
 }
