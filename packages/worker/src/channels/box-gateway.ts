@@ -1,6 +1,7 @@
 import { accruedCostUsd } from '../lib/fleet-config.ts'
 import type { BoxRow } from '../lib/fleet-store.ts'
 import {
+	accountTokenSecret,
 	getBox,
 	getCloudAgent,
 	heartbeatBox,
@@ -238,12 +239,18 @@ export async function handleBoxInferenceAuth(request: Request, env: Env): Promis
 		} catch {}
 	}
 
+	// An alternate account's token is stored under its own name but served under
+	// the standard one, so the runner is account-unaware. No fallback to the
+	// default token: a missing secret must not bill the wrong subscription.
+	const stored = (name: string) =>
+		agent.account && name === 'CLAUDE_CODE_OAUTH_TOKEN' ? accountTokenSecret(agent.account) : name
+
 	const values: Record<string, string> = {}
 	const missing: string[] = []
 	for (const name of names) {
-		const secret = await getSecret(name, 'app', '', env)
+		const secret = await getSecret(stored(name), 'app', '', env)
 		if (secret) values[name] = secret.value
-		else missing.push(name)
+		else missing.push(stored(name))
 	}
 	if (missing.length > 0) {
 		return Response.json(

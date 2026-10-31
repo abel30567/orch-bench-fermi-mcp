@@ -63,6 +63,7 @@ Legacy free-text contracts are grandfathered; new launches should always pass st
 |-------|-----|----------|
 | AWS access key pair | `RunInstances`/`TerminateInstances`/`DescribeInstances` | IAM policy limited to those actions, one region, your fleet security group |
 | `CLAUDE_CODE_OAUTH_TOKEN` in Fermi secrets | boxes inference on your existing Claude subscription — **inference is not billed to the budget**, EC2 wall-clock is | it's your sub; rotate from your Anthropic account |
+| `CLAUDE_CODE_OAUTH_TOKEN_<ACCOUNT>` in Fermi secrets (optional) | alternate Claude accounts: launch with `account: "<account>"` (claude route, `^[a-z][a-z0-9_]{0,31}$`) and the box is served this token under the standard name. Route health is per account: `routes["claude:<account>"]` in `/admin/fleet/status`; `routes.claude` covers the default account only | one secret per account; `<ACCOUNT>` is the id uppercased. Launch fails if the secret is missing |
 | `GITHUB_TOKEN` in Fermi secrets | clone/push/PR | fine-grained token, only the repos agents work |
 | `fleet:config` in KV | region, instance type, `allowed_instance_types`, `max_concurrent`, `monthly_budget_usd`, `runner_ref`+`runner_sha256`, TTLs | `GET`/`POST /admin/fleet/config` (bearer) for the operator fields; `pin-runner` for the pin |
 

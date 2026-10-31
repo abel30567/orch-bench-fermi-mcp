@@ -4,5 +4,6 @@ declare module 'cloudflare:test' {
 		FERMI_KV: KVNamespace
 		TELEGRAM_BOT_TOKEN: string
 		TELEGRAM_WEBHOOK_SECRET: string
+		TEST_MIGRATIONS: D1Migration[]
 	}
 }

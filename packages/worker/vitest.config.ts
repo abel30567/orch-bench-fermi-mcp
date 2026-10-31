@@ -1,4 +1,6 @@
-import { defineWorkersConfig } from '@cloudflare/vitest-pool-workers/config'
+import { defineWorkersConfig, readD1Migrations } from '@cloudflare/vitest-pool-workers/config'
+
+const migrations = await readD1Migrations(new URL('./migrations', import.meta.url).pathname)
 
 export default defineWorkersConfig({
 	test: {
@@ -20,6 +22,7 @@ export default defineWorkersConfig({
 						SLACK_BRIDGE_SECRET: 'test-sl-secret',
 						FERMI_SECRETS_KEY: '000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f',
 						FERMI_BEARER_TOKEN: 'test-admin-bearer',
+						TEST_MIGRATIONS: migrations,
 					},
 				},
 			},
