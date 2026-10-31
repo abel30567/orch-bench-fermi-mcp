@@ -31,7 +31,7 @@ Every tier of Fermi is a trust decision. This page enumerates exactly what each 
 
 ::: warning What the rules above do NOT guarantee
 - The budget cap is **soft**: accrual is checked between polls, not enforced by AWS. A runaway box costs money until the TTL reaper or you kill it.
-- The approval gate keys on token *presence*, not argument re-verification (args are hashed for audit, not re-compared).
+- The approval gate binds a token to the tool and args that minted it, but it does not prove a human approved: the token goes back to the caller, so anything that can repeat the call can redeem it. Redemption is also a KV read then delete, not an atomic operation, so single use is not guaranteed under concurrent redeems.
 - MacOSMCP behind a tunnel is a remote-control surface for anyone holding both your Worker auth and a connected host. Host discipline is part of the perimeter.
 - Channel allowlists gate who can *enqueue* work; they do not sandbox what a queued task may ask for. Prompt-injection through channel content remains your risk to manage.
 - On a phone call, everything in the call's `context` can be spoken to whoever answers, and the other party's words come back as a transcript. Put only what the call needs in `context`, and treat the transcript as untrusted input.
