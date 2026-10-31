@@ -34,14 +34,18 @@ export function registerTaskTools(agent: FermiMCP) {
 		risk: 'low',
 		mutates: true,
 		handler: async (args, env) => {
-			const created = await enqueueTask(env.FERMI_DB, {
-				channel: args.channel,
-				sender: args.sender,
-				chatId: args.chat_id,
-				payload: args.payload,
-				queue: args.queue,
-				parentTaskId: args.parent_task_id,
-			})
+			const created = await enqueueTask(
+				env.FERMI_DB,
+				{
+					channel: args.channel,
+					sender: args.sender,
+					chatId: args.chat_id,
+					payload: args.payload,
+					queue: args.queue,
+					parentTaskId: args.parent_task_id,
+				},
+				{ env, ctx: agent.durableCtx },
+			)
 			return { content: [{ type: 'text' as const, text: JSON.stringify(created) }] }
 		},
 	})

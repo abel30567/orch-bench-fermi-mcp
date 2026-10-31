@@ -7,7 +7,7 @@ import { enqueueTask, hasOpenTaskFromSender } from '../lib/task-store.ts'
  * Coalescing keeps at most one pending task per schedule (e.g. while the Mac
  * sleeps); advancing even when coalesced prevents rechecking every tick.
  */
-export async function handleScheduleTick(env: Env, now = Date.now()) {
+export async function handleScheduleTick(env: Env, now = Date.now(), ctx?: ExecutionContext) {
 	const due = await dueSchedules(env.FERMI_DB, now)
 	let enqueued = 0
 	for (const schedule of due) {
@@ -16,12 +16,16 @@ export async function handleScheduleTick(env: Env, now = Date.now()) {
 			await advanceSchedule(env.FERMI_DB, schedule, 'coalesced', now)
 			continue
 		}
-		await enqueueTask(env.FERMI_DB, {
-			channel: schedule.channel,
-			sender,
-			chatId: schedule.chat_id,
-			payload: schedule.prompt,
-		})
+		await enqueueTask(
+			env.FERMI_DB,
+			{
+				channel: schedule.channel,
+				sender,
+				chatId: schedule.chat_id,
+				payload: schedule.prompt,
+			},
+			{ env, ctx },
+		)
 		await advanceSchedule(env.FERMI_DB, schedule, 'enqueued', now)
 		enqueued++
 	}

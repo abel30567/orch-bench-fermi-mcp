@@ -8,7 +8,7 @@ import {
 import { createCloudAgent, getBox } from './fleet-store.ts'
 import { parseProofContract } from './proof-contract.ts'
 import { type ProvisionOutcome, dispatchProvision } from './provisioner.ts'
-import { enqueueTask } from './task-store.ts'
+import { type QueueHookContext, enqueueTask } from './task-store.ts'
 
 export interface LaunchInput {
 	prompt: string
@@ -39,7 +39,11 @@ export type LaunchResult =
 	  }
 
 /** Single launch path shared by the MCP tool and the admin endpoint. */
-export async function launchCloudAgent(env: Env, input: LaunchInput): Promise<LaunchResult> {
+export async function launchCloudAgent(
+	env: Env,
+	input: LaunchInput,
+	ctx?: QueueHookContext['ctx'],
+): Promise<LaunchResult> {
 	// #36: new launches must carry a structured, mechanically-checkable
 	// contract — free text is judged by an LLM and was vacuously satisfiable.
 	const proof = parseProofContract(input.proof_contract)
@@ -80,23 +84,27 @@ export async function launchCloudAgent(env: Env, input: LaunchInput): Promise<La
 			return { ...reservation, ok: false, error: String(reservation.error ?? 'admission_denied') }
 	}
 	const queue = `agent:${agentId}`
-	const task = await enqueueTask(env.FERMI_DB, {
-		channel: 'cloud',
-		sender: `cloud_agent:${agentId}`,
-		chatId: 'cloud',
-		payload: JSON.stringify({
-			prompt: input.prompt,
-			proof_contract: input.proof_contract,
-			route: input.route ?? 'claude',
-			model: input.model ?? null,
-			skills: input.skills ?? [],
-			sessions: input.sessions ?? [],
-			repo: input.repo ?? null,
-			branch: input.branch ?? null,
-		}),
-		queue,
-		parentTaskId: input.parent_task_id,
-	})
+	const task = await enqueueTask(
+		env.FERMI_DB,
+		{
+			channel: 'cloud',
+			sender: `cloud_agent:${agentId}`,
+			chatId: 'cloud',
+			payload: JSON.stringify({
+				prompt: input.prompt,
+				proof_contract: input.proof_contract,
+				route: input.route ?? 'claude',
+				model: input.model ?? null,
+				skills: input.skills ?? [],
+				sessions: input.sessions ?? [],
+				repo: input.repo ?? null,
+				branch: input.branch ?? null,
+			}),
+			queue,
+			parentTaskId: input.parent_task_id,
+		},
+		{ env, ctx },
+	)
 	const created = await createCloudAgent(env.FERMI_DB, {
 		id: agentId,
 		queue,

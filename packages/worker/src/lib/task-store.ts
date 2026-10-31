@@ -1,3 +1,5 @@
+import { fireQueueHook } from './queue-hooks.ts'
+
 export interface TaskRow {
 	id: string
 	channel: string
@@ -23,7 +25,21 @@ export type ClaimedTask = Pick<
 const DEFAULT_CLAIM_LIMIT = 3
 const DEFAULT_STALE_MS = 15 * 60_000
 export const DEFAULT_QUEUE = 'main'
+/** Queue prefixes owned by the cloud fleet / broker — off-limits to the channel drain. */
+const FLEET_QUEUE_PREFIXES = ['agent:', 'broker:']
+/** Queues drained by an external consumer; claimable via task_claim, but they must not wake the channel drain. */
+const NON_DRAIN_QUEUES = ['grok-bot']
 
+export interface QueueHookContext {
+	env: Env
+	ctx?: Pick<ExecutionContext, 'waitUntil'>
+}
+
+/**
+ * Pass `hook` on every production path so queue:hooks fires whichever way a
+ * task arrives. With hook.ctx the wake runs after the response (it retries, so
+ * it must not hold up the caller); without it the wake is awaited.
+ */
 export async function enqueueTask(
 	db: D1Database,
 	input: {
@@ -34,9 +50,11 @@ export async function enqueueTask(
 		queue?: string
 		parentTaskId?: string
 	},
+	hook?: QueueHookContext,
 ): Promise<{ id: string; created_at: number }> {
 	const id = crypto.randomUUID()
 	const createdAt = Date.now()
+	const queue = input.queue ?? DEFAULT_QUEUE
 	await db
 		.prepare(
 			'INSERT INTO tasks (id, channel, sender, chat_id, payload, created_at, queue, parent_task_id) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)',
@@ -48,10 +66,15 @@ export async function enqueueTask(
 			input.chatId,
 			input.payload,
 			createdAt,
-			input.queue ?? DEFAULT_QUEUE,
+			queue,
 			input.parentTaskId ?? null,
 		)
 		.run()
+	if (hook) {
+		const wake = fireQueueHook(hook.env, { task_id: id, queue })
+		if (hook.ctx) hook.ctx.waitUntil(wake)
+		else await wake
+	}
 	return { id, created_at: createdAt }
 }
 
@@ -134,18 +157,25 @@ export async function countPendingTasks(db: D1Database, queue?: string): Promise
 	// Mac warm worker). Fleet queues (agent:<id> work tasks, broker:ops) are
 	// drained by boxes and the broker executor, NOT the channel drain — counting
 	// them here woke the drain, which then claimed cloud-agent tasks out from
-	// under their boxes (2026-09-08). Exclude them.
+	// under their boxes (2026-09-08). Exclude them. NON_DRAIN_QUEUES are excluded
+	// too: the drain only claims `main`, so counting them re-fires it forever.
+	const prefixes = FLEET_QUEUE_PREFIXES.map((prefix) => `${prefix}%`)
+	const exclusions = [
+		...prefixes.map((_, i) => `queue NOT LIKE ?${i + 1}`),
+		...NON_DRAIN_QUEUES.map((_, i) => `queue != ?${prefixes.length + i + 1}`),
+	]
 	const row = await db
 		.prepare(
-			"SELECT COUNT(*) AS n FROM tasks WHERE status = 'pending' AND queue NOT LIKE 'agent:%' AND queue NOT LIKE 'broker:%'",
+			`SELECT COUNT(*) AS n FROM tasks WHERE status = 'pending' AND ${exclusions.join(' AND ')}`,
 		)
+		.bind(...prefixes, ...NON_DRAIN_QUEUES)
 		.first<{ n: number }>()
 	return row?.n ?? 0
 }
 
-/** Queues owned by the cloud fleet / broker — off-limits to the channel drain. */
+/** Queues owned by the cloud fleet / broker — off-limits to the channel drain and task_claim. */
 export function isFleetQueue(queue?: string): boolean {
-	return !!queue && (queue.startsWith('agent:') || queue.startsWith('broker:'))
+	return !!queue && FLEET_QUEUE_PREFIXES.some((prefix) => queue.startsWith(prefix))
 }
 
 export async function listTasks(

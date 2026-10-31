@@ -428,6 +428,54 @@ curl -X POST https://<worker>/cron/capability-reindex \
   -H "Authorization: Bearer $FERMI_BEARER_TOKEN"
 ```
 
+### Handing tasks to Grok Bot
+
+Queue `grok-bot`, channel `cloud`. The work runs on Grok Bot's inference, not the caller's.
+
+```jsonc
+// caller — payload is a JSON string
+task_enqueue({
+  channel: "cloud", sender: "claude-code", chat_id: "cloud", queue: "grok-bot",
+  payload: "{\"v\":1,\"ask\":\"...\",\"context\":\"...\",\"repo\":\"owner/name\",\"expected_output\":\"...\",\"deadline_min\":30}"
+})
+// Grok Bot
+task_claim({ queue: "grok-bot", claimed_by: "grok-bot", lease_minutes: 60 })
+task_complete({ id, claimed_by: "grok-bot", result: "short result" })
+```
+
+Long output goes to memory key `handoff:<task_id>`, and the result reads
+`memory:handoff:<task_id>`.
+
+`task_wait` caps at 120 seconds per call, so to await a longer job, call it again
+while it returns `status: "timeout"`, up to the payload's `deadline_min`.
+
+`GET /admin/tasks/pending?queue=grok-bot` returns that queue's pending count, so a
+timed check can skip work when it is empty. Without `?queue=` it stays the channel
+drain's signal, which excludes fleet queues and `grok-bot` (`NON_DRAIN_QUEUES` in
+`lib/task-store.ts`).
+
+#### Queue wake hooks
+
+To wake a consumer on enqueue instead of waiting for its timer, store the auth value
+as an app-scoped secret and add the queue to the KV key `queue:hooks`. Until that key
+has an entry for the queue, enqueuing sends nothing.
+
+```jsonc
+secret_set({ name: "GROKBOT_WEBHOOK_KEY", value: "...", allowed_hosts: ["<webhook host>"] })
+```
+
+```bash
+wrangler kv key put --binding FERMI_KV --remote queue:hooks \
+  '{"grok-bot":{"url":"https://<webhook host>/<path>","auth_header":"x-api-key","secret":"GROKBOT_WEBHOOK_KEY"}}'
+```
+
+Each enqueue on that queue POSTs `{"task_id":"...","queue":"grok-bot"}` with the
+secret's value as the `auth_header` header (include any `Bearer ` prefix in the
+secret). The hook is skipped if the URL's host is not in the secret's
+`allowed_hosts`. It makes up to 3 attempts with a 5s timeout each, retrying network
+errors, 429 and 5xx. Redirects are not followed. Failures are logged as `queue_hook`
+and never affect the enqueue.
+
 ### Telemetry
 
 `usage_stats` aggregates the D1 audit log — call counts, success vs. denied,

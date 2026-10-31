@@ -95,7 +95,7 @@ export function registerCloudAgentTools(agent: FermiMCP) {
 		risk: 'high',
 		mutates: true,
 		handler: async (args, env) => {
-			return json(await launchCloudAgent(env, args))
+			return json(await launchCloudAgent(env, args, agent.durableCtx))
 		},
 	})
 
@@ -182,16 +182,20 @@ export function registerCloudAgentTools(agent: FermiMCP) {
 			if (['done', 'failed', 'destroyed'].includes(row.status)) {
 				return json({ ok: false, error: 'agent_finished', status: row.status })
 			}
-			const task = await enqueueTask(env.FERMI_DB, {
-				channel: 'cloud',
-				sender: `followup:${args.id}`,
-				chatId: 'cloud',
-				payload: JSON.stringify({
-					type: args.interrupt ? 'interrupt' : 'followup',
-					message: args.message,
-				}),
-				queue: `${row.queue}:ctl`,
-			})
+			const task = await enqueueTask(
+				env.FERMI_DB,
+				{
+					channel: 'cloud',
+					sender: `followup:${args.id}`,
+					chatId: 'cloud',
+					payload: JSON.stringify({
+						type: args.interrupt ? 'interrupt' : 'followup',
+						message: args.message,
+					}),
+					queue: `${row.queue}:ctl`,
+				},
+				{ env, ctx: agent.durableCtx },
+			)
 			return json({ ok: true, control_task_id: task.id })
 		},
 	})
@@ -210,13 +214,17 @@ export function registerCloudAgentTools(agent: FermiMCP) {
 			if (['done', 'failed', 'destroyed'].includes(row.status)) {
 				return json({ ok: false, error: 'agent_finished', status: row.status })
 			}
-			const task = await enqueueTask(env.FERMI_DB, {
-				channel: 'cloud',
-				sender: `stop:${args.id}`,
-				chatId: 'cloud',
-				payload: JSON.stringify({ type: 'stop' }),
-				queue: `${row.queue}:ctl`,
-			})
+			const task = await enqueueTask(
+				env.FERMI_DB,
+				{
+					channel: 'cloud',
+					sender: `stop:${args.id}`,
+					chatId: 'cloud',
+					payload: JSON.stringify({ type: 'stop' }),
+					queue: `${row.queue}:ctl`,
+				},
+				{ env, ctx: agent.durableCtx },
+			)
 			return json({ ok: true, control_task_id: task.id })
 		},
 	})
