@@ -8,6 +8,56 @@ const sql = (value) => {
 	return `'${String(value).replaceAll("'", "''")}'`
 }
 
+// Chats live in the conversation store under `channel:chat_id` hosts, the same
+// channels as the context_bootstrap and conversation_history schemas. Other hosts
+// are MCP agent sessions, which keep logging to their row while the worker runs.
+const CHANNELS = ['tg', 'wa', 'dc', 'sl']
+const CHANNEL_HOST = CHANNELS.map((c) => `host LIKE '${c}:%'`).join(' OR ')
+
+/**
+ * Statements that replace the conversation store's chats with the fixture's
+ * history: the open session getOrCreateChannelSession would find, then one
+ * message per turn, as logChannelMessage writes them but backdated to
+ * `minutes_ago`. The FTS triggers index the turns for session_search. A sender
+ * attributes user turns the way the channel gateways do in group chats.
+ */
+function historyStatements({ channel, chat_id, sender, history }, now) {
+	const out = [
+		`DELETE FROM messages WHERE session_id IN (SELECT id FROM sessions WHERE ${CHANNEL_HOST})`,
+		`DELETE FROM sessions WHERE ${CHANNEL_HOST}`,
+	]
+	if (history.length === 0) return out
+	if (!CHANNELS.includes(channel) || typeof chat_id !== 'string' || chat_id === '') {
+		throw new Error('fixture history needs a channel (tg, wa, dc, sl) and a chat_id')
+	}
+	const turns = history.map(({ role, text, minutes_ago: minutesAgo }, i) => {
+		if (
+			!['user', 'assistant'].includes(role) ||
+			typeof text !== 'string' ||
+			typeof minutesAgo !== 'number' ||
+			!(minutesAgo >= 0)
+		) {
+			throw new Error(`fixture history[${i}] needs role, text and minutes_ago >= 0`)
+		}
+		return {
+			role,
+			body: sender && role === 'user' ? `[${sender}] ${text}` : text,
+			createdAt: Math.round(now - minutesAgo * 60_000),
+		}
+	})
+	const id = crypto.randomUUID()
+	const startedAt = Math.min(...turns.map((t) => t.createdAt))
+	out.push(
+		`INSERT INTO sessions (id, host, mode, started_at) VALUES (${sql(id)}, ${sql(`${channel}:${chat_id}`)}, 'chat', ${startedAt})`,
+	)
+	for (const { role, body, createdAt } of turns) {
+		out.push(
+			`INSERT INTO messages (session_id, role, body, created_at) VALUES (${sql(id)}, ${sql(role)}, ${sql(body)}, ${createdAt})`,
+		)
+	}
+	return out
+}
+
 /**
  * Statements that replace the eval-relevant state with the fixture's. Tables
  * the fixture names are cleared first, so a re-seed leaves exactly the fixture.
@@ -46,6 +96,7 @@ export function seedStatements(fixture, now = Date.now()) {
 			)
 		}
 	}
+	if (fixture.history) out.push(...historyStatements(fixture, now))
 	return out
 }
 
@@ -56,6 +107,7 @@ export const DUMP_QUERIES = {
 		'SELECT id, kind, body, pinned, created_at, decayed_at FROM memory ORDER BY created_at, id',
 	allowlist: 'SELECT channel, sender_id, note FROM allowlist ORDER BY channel, sender_id',
 	tasks: 'SELECT * FROM tasks ORDER BY created_at, id',
+	history: `SELECT substr(host, 1, instr(host, ':') - 1) AS channel, substr(host, instr(host, ':') + 1) AS chat_id, m.role, m.body AS text, m.created_at FROM messages m JOIN sessions s ON m.session_id = s.id WHERE ${CHANNEL_HOST} ORDER BY m.created_at, m.id`,
 	outbox: 'SELECT * FROM outbox ORDER BY created_at, id',
 	schedules: 'SELECT * FROM schedules ORDER BY created_at, id',
 	skills:

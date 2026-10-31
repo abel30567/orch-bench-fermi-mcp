@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 // Seed a local eval worker (wrangler.eval.jsonc) from a fixture JSON: profile,
-// memories, allowlist, pending tasks and skills. Applies D1 migrations, replaces
-// those tables with the fixture's rows via `wrangler d1 execute --local`, then
-// writes each skill through the running worker's `skill_set` tool on /mcp.
+// memories, allowlist, pending tasks, conversation history and skills. Applies D1
+// migrations, replaces those tables with the fixture's rows via
+// `wrangler d1 execute --local`, then writes each skill through the running worker's `skill_set` tool on /mcp.
 //
 //   node scripts/eval-seed.mjs test/fixtures/eval/sample.json [--persist-to DIR] \
 //     [--url http://127.0.0.1:8787]
@@ -28,8 +28,6 @@ if (!fixturePath) {
 }
 
 const fixture = JSON.parse(readFileSync(fixturePath, 'utf8'))
-const file = join(mkdtempSync(join(tmpdir(), 'fermi-eval-seed-')), 'seed.sql')
-writeFileSync(file, `${seedStatements(fixture).join(';\n')};\n`)
 
 const wrangler = (...rest) =>
 	execFileSync(
@@ -47,6 +45,9 @@ const wrangler = (...rest) =>
 		{ cwd: new URL('..', import.meta.url), stdio: ['ignore', 'inherit', 'inherit'] },
 	)
 wrangler('migrations', 'apply')
+// After the migrations, so `minutes_ago` is relative to the moment of the write.
+const file = join(mkdtempSync(join(tmpdir(), 'fermi-eval-seed-')), 'seed.sql')
+writeFileSync(file, `${seedStatements(fixture).join(';\n')};\n`)
 wrangler('execute', '--file', file)
 if (fixture.skills) {
 	await seedSkills(fixture.skills, new URL('/mcp', url).href)
