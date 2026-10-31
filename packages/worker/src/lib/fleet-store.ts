@@ -298,3 +298,47 @@ export async function listCloudAgents(
 		.all<CloudAgentRow>()
 	return results
 }
+
+export interface RouteHealth {
+	unavailable: boolean
+	consecutive_api_errors: number
+	api_error_status: number | null
+	last_error: string | null
+	since: number | null
+}
+
+export const ROUTE_UNAVAILABLE_THRESHOLD = 3
+const API_ERROR_RE = /harness api_error (\d+)/
+
+/** A route is unavailable when its most recently ended agents all failed with the
+ * same `harness api_error <status>` (spend cap, 429, auth). Any other outcome resets. */
+export function routeHealth(
+	agents: Pick<CloudAgentRow, 'route' | 'ended_at' | 'exit_reason'>[],
+	route: CloudAgentRow['route'],
+): RouteHealth {
+	const ended = agents
+		.filter((a) => a.route === route && a.ended_at != null)
+		.sort((a, b) => (b.ended_at as number) - (a.ended_at as number))
+	let count = 0
+	let status: number | null = null
+	let lastError: string | null = null
+	let since: number | null = null
+	for (const a of ended) {
+		const m = a.exit_reason ? API_ERROR_RE.exec(a.exit_reason) : null
+		if (!m) break
+		const s = Number(m[1])
+		if (status === null) {
+			status = s
+			lastError = a.exit_reason
+		} else if (s !== status) break
+		count++
+		since = a.ended_at
+	}
+	return {
+		unavailable: count >= ROUTE_UNAVAILABLE_THRESHOLD,
+		consecutive_api_errors: count,
+		api_error_status: status,
+		last_error: lastError,
+		since,
+	}
+}
