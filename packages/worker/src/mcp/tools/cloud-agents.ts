@@ -59,6 +59,14 @@ export const cloudAgentLaunchSchema = {
 		.optional()
 		.default('claude')
 		.describe('Inference route for the agent harness'),
+	// Validated in launchCloudAgent (not zod) so MCP and /admin/fleet/launch
+	// return the same invalid_account error.
+	account: z
+		.string()
+		.optional()
+		.describe(
+			'Alternate Claude account id (claude route only, ^[a-z][a-z0-9_]{0,31}$). Its token must be stored as the secret CLAUDE_CODE_OAUTH_TOKEN_<ACCOUNT>. Omit for the default account.',
+		),
 	model: z.string().optional().describe('Override the route model id (e.g. gpt-6-astra)'),
 	box_id: z
 		.string()
