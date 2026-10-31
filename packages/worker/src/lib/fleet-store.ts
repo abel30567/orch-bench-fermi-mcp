@@ -298,3 +298,61 @@ export async function listCloudAgents(
 		.all<CloudAgentRow>()
 	return results
 }
+
+export const FLEET_ROUTES: CloudAgentRow['route'][] = ['claude', 'codex', 'grok']
+
+/** Ended agents in a row with the same api_error before a route is flagged. */
+export const ROUTE_UNAVAILABLE_STREAK = 3
+
+const API_ERROR_RE = /^harness api_error ([^\s:]+)/
+
+export interface RouteHealth {
+	unavailable: boolean
+	consecutive_api_errors: number
+	api_error_status: string | null
+	last_error: string | null
+	/** ended_at of the oldest agent in the current api_error streak. */
+	since: number | null
+}
+
+/** Route health from its most recently ended agents: `unavailable` once the
+ * last ROUTE_UNAVAILABLE_STREAK all failed with the same `harness api_error
+ * <status>` (spend cap, 429, auth). Any other outcome breaks the streak. */
+export function routeHealth(agents: CloudAgentRow[], route: CloudAgentRow['route']): RouteHealth {
+	const ended = agents
+		.filter((a) => a.route === route && a.ended_at !== null)
+		.sort((a, b) => (b.ended_at as number) - (a.ended_at as number))
+	let count = 0
+	let status: string | null = null
+	let since: number | null = null
+	for (const a of ended) {
+		const match = a.status === 'failed' ? API_ERROR_RE.exec(a.exit_reason ?? '') : null
+		if (!match || (status !== null && match[1] !== status)) break
+		status = match[1]
+		since = a.ended_at
+		count++
+	}
+	return {
+		unavailable: count >= ROUTE_UNAVAILABLE_STREAK,
+		consecutive_api_errors: count,
+		api_error_status: status,
+		last_error: count > 0 ? ended[0].exit_reason : null,
+		since,
+	}
+}
+
+/** Most recently ended agents on a route, newest first, for routeHealth. */
+export async function listRecentEndedAgents(
+	db: D1Database,
+	route: CloudAgentRow['route'],
+	limit = 20,
+): Promise<CloudAgentRow[]> {
+	const { results } = await db
+		.prepare(
+			`SELECT * FROM cloud_agents WHERE route = ?1 AND ended_at IS NOT NULL
+			 ORDER BY ended_at DESC LIMIT ?2`,
+		)
+		.bind(route, Math.min(Math.max(limit, 1), 100))
+		.all<CloudAgentRow>()
+	return results
+}
