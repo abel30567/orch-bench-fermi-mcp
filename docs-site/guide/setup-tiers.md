@@ -43,7 +43,7 @@ flowchart LR
 
 **You grant:** AWS credentials to the Worker (EC2 RunInstances/Terminate in one region), a Claude OAuth token that rides to boxes for inference, a GitHub token if agents push code. See [Access you must grant](/guide/access-grants) — this tier is the big one.
 
-**Ops burden:** pin the runner (`fleetctl pin-runner`) after every `box-runner.mjs` change; watch `cloud_agent_list` and the reaper do the rest. Budget is a soft cap checked between polls, not a hard circuit breaker — set `monthly_budget_usd` accordingly.
+**Ops burden:** pin the runner (`fleetctl pin-runner`) after every change to a pinned file; watch `cloud_agent_list` and the reaper do the rest. Budget is a soft cap checked between polls, not a hard circuit breaker — set `monthly_budget_usd` accordingly.
 
 ## Tier 5 — multi-daemon / multi-Mac (complex)
 
