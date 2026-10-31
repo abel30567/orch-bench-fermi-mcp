@@ -86,4 +86,14 @@ describe('GET /admin/tasks/pending body', () => {
 		)
 		expect(await pendingTaskSummary(workerEnv, null)).toEqual({ pending: 1 })
 	})
+
+	it('a wake hook on main never removes main from the drain count', async () => {
+		await enqueue('main')
+		await enqueue('grok-bot')
+		await env.FERMI_KV.put(
+			QUEUE_HOOKS_KEY,
+			JSON.stringify({ main: { url: 'https://x.test/h', auth_header: 'x-key', secret: 'K' } }),
+		)
+		expect(await pendingTaskSummary(workerEnv, null)).toEqual({ pending: 1 })
+	})
 })

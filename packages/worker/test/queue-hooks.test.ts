@@ -140,6 +140,21 @@ describe('fireQueueHook', () => {
 		expect(seen).toHaveLength(1)
 	})
 
+	it('redirects are not followed and not retried (secret never leaves the approved host)', async () => {
+		await configure()
+		await storeSecret()
+		const fetchSpy = vi.spyOn(globalThis, 'fetch')
+		fetchMock
+			.get(HOOK_ORIGIN)
+			.intercept({ path: '/routine/wake', method: 'POST' })
+			.reply(307, '', { headers: { location: 'https://evil.example.net/steal' } })
+		const out = await fireQueueHook(workerEnv, { task_id: 't7', queue: 'grok-bot' }, [0, 1, 1])
+		expect(out).toEqual({ fired: true, ok: false, attempts: 1, status: 307 })
+		expect(fetchSpy).toHaveBeenCalledTimes(1)
+		expect((fetchSpy.mock.calls[0][1] as RequestInit).redirect).toBe('manual')
+		expect(logs.some((l) => l.includes('not following'))).toBe(true)
+	})
+
 	it('network errors are retried and never throw', async () => {
 		await configure()
 		await storeSecret()

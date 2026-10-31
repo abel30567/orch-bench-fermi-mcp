@@ -192,7 +192,9 @@ export async function pendingTaskSummary(
 	queue: string | null,
 ): Promise<{ queue?: string; pending: number }> {
 	if (queue) return { queue, pending: await countPendingTasks(env.FERMI_DB, queue) }
-	const excludeQueues = Object.keys(await loadQueueHooks(env))
+	// A hook on the default queue only adds a wake signal; main is still the
+	// channel drain's queue, so it must never be excluded from this count.
+	const excludeQueues = Object.keys(await loadQueueHooks(env)).filter((q) => q !== DEFAULT_QUEUE)
 	return { pending: await countPendingTasks(env.FERMI_DB, undefined, { excludeQueues }) }
 }
 

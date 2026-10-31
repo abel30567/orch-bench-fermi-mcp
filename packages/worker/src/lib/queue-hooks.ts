@@ -48,7 +48,8 @@ function isRetryable(status: number): boolean {
  * Fire the wake hook for one enqueued task. Never throws; callers should run
  * it via ctx.waitUntil so it never blocks the enqueue. `delaysMs` holds one
  * wait per attempt (the wait happens before that attempt). Retries on network
- * errors, timeouts, 429 and 5xx; any other status stops.
+ * errors, timeouts, 429 and 5xx; any other status stops. Redirects are
+ * never followed (the secret header must not reach an unapproved host).
  */
 export async function fireQueueHook(
 	env: Env,
@@ -90,11 +91,18 @@ export async function fireQueueHook(
 					method: 'POST',
 					headers: { 'content-type': 'application/json', [cfg.auth_header]: rec.value },
 					body,
+					// Never follow redirects: the auth header would be re-sent to a
+					// host the secret's allowed_hosts never approved.
+					redirect: 'manual',
 					signal: AbortSignal.timeout(ATTEMPT_TIMEOUT_MS),
 				})
 				lastStatus = res.status
 				await res.body?.cancel()
 				if (res.ok) return { fired: true, ok: true, attempts: attempt, status: res.status }
+				if (res.status >= 300 && res.status < 400) {
+					console.warn(`${tag} attempt ${attempt} got redirect ${res.status}; not following`)
+					return { fired: true, ok: false, attempts: attempt, status: res.status }
+				}
 				if (!isRetryable(res.status)) {
 					console.warn(`${tag} attempt ${attempt} got ${res.status}; not retrying`)
 					return { fired: true, ok: false, attempts: attempt, status: res.status }
