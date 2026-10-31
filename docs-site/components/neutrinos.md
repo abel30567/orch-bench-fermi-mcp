@@ -38,7 +38,7 @@ stateDiagram-v2
 }
 ```
 
-2. The Worker enqueues the task on a private queue `agent:<id>`, checks `max_concurrent` and the monthly budget, and calls EC2 `RunInstances` (signed with your AWS keys from the secrets store, via `aws4fetch` — no SDK). User-data contains only the **pinned fetch**: download `box-runner.mjs` at a specific commit SHA, verify its sha256 against the pin, refuse to run otherwise.
+2. The Worker enqueues the task on a private queue `agent:<id>`, checks `max_concurrent` and the monthly budget, and calls EC2 `RunInstances` (signed with your AWS keys from the secrets store, via `aws4fetch` — no SDK). User-data contains only the **pinned fetch**: download every file in the runner pin (`box-runner.mjs` and any shared modules) at a specific commit SHA into the same relative layout, verify each sha256 against the pin, refuse to run if any file is missing or differs.
 3. The box authenticates every call with its **per-box token** `<box_id>.<secret>` (hashed at rest) against the `/box/*` gateway: `poll` → claim the task, `heartbeat`, `artifact` (upload evidence to R2), `inference-auth` (fetch the Claude OAuth token), `session-lease` (broker handle, never cookies), `complete`, `report` (crash telemetry — every fatal path phones home).
 4. The runner sets the git identity to `fermi-neutrino` — machine commits are visibly machine commits — runs the chosen harness, auto-generates `out.diff` if the agent forgot, and self-checks the proof contract locally *before* submitting, running one corrective pass if it would fail.
 5. `/box/complete` re-checks the proof contract **server-side** (`lib/proof-contract.ts`). `done` without satisfiable proof → HTTP 422, task stays claimed, the box may fix its work or fail honestly. Honest failure is always accepted.
@@ -64,7 +64,7 @@ Legacy free-text contracts are grandfathered; new launches should always pass st
 | AWS access key pair | `RunInstances`/`TerminateInstances`/`DescribeInstances` | IAM policy limited to those actions, one region, your fleet security group |
 | `CLAUDE_CODE_OAUTH_TOKEN` in Fermi secrets | boxes inference on your existing Claude subscription — **inference is not billed to the budget**, EC2 wall-clock is | it's your sub; rotate from your Anthropic account |
 | `GITHUB_TOKEN` in Fermi secrets | clone/push/PR | fine-grained token, only the repos agents work |
-| `fleet:config` in KV | region, instance type, `allowed_instance_types`, `max_concurrent`, `monthly_budget_usd`, `runner_ref`+`runner_sha256`, TTLs | `GET`/`POST /admin/fleet/config` (bearer) for the operator fields; `pin-runner` for the pin |
+| `fleet:config` in KV | region, instance type, `allowed_instance_types`, `max_concurrent`, `monthly_budget_usd`, `runner_ref`+`runner_sha256`+`runner_files`, TTLs | `GET`/`POST /admin/fleet/config` (bearer) for the operator fields; `pin-runner` for the pin |
 
 Cost intuition: a `t3.small` is $0.0208/hr. The 100-agent run (~6 minutes median per box) cost about **$1.60 of EC2** and zero marginal inference.
 
@@ -73,7 +73,7 @@ Sizing: `t3.small` (2 GiB) is fine for Python-only verifiers and small fixes. No
 ## Operating it
 
 ```bash
-fleetctl pin-runner        # after ANY box-runner.mjs change — launch refuses unpinned
+fleetctl pin-runner        # after ANY pinned runner file change — launch refuses unpinned
 cloud_agent_launch ...     # from any host
 cloud_agent_list / get     # status, exit_reason, accrued cost, inference telemetry
 cloud_agent_followup       # send a follow-up prompt to a live box (agent_stalled if its runner died)
@@ -81,6 +81,8 @@ cloud_agent_stop / destroy # manual kill switch
 ```
 
 Liveness is on the agent record, not in the event log: `last_heartbeat_at` (runner check-in), `last_working_event_at` (last harness progress note), `restart_count`, `instance_type`. The reaper fails an agent `runner_stalled` and terminates its box when heartbeats go stale, and the box gateway fails it `runner_restarted` when a pre-resume runner announces a fresh boot over held work — in both cases the work task fails too, so `task_wait` returns instead of hanging until TTL.
+
+`POST /admin/fleet/pin-runner` takes `{"ref": "<sha>"}` to pin `box-runner.mjs` alone, or `{"ref": "<sha>", "files": {"box-runner.mjs": "<sha256>", "lib/x.mjs": "<sha256>"}}` to pin a manifest (up to 24 files, must include `box-runner.mjs`). The worker fetches each file at that ref and answers `409 sha256_mismatch` if a hash differs. Every pin replaces the previous one whole.
 
 ## Failure modes
 
