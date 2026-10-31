@@ -51,8 +51,8 @@ One server, one memory, one permission spine — the host changes, the agent doe
   is `true`, an OAuth provider gates the MCP transports; otherwise they are open.
 - **Durable Objects**: `FermiMCP` (the agent, SQLite-backed), `LiveCanvasDO`,
   `SandboxStorageDO`, `BrowserSessionDO`.
-- **Storage**: D1 (memory, sessions/messages + FTS5, audit, hooks, skills metadata,
-  secrets metadata, oauth), R2 (skills, files, apps), KV (config, approval tokens),
+- **Storage**: D1 (memory, sessions/messages + FTS5, audit, approval tokens, hooks, skills metadata,
+  secrets metadata, oauth), R2 (skills, files, apps), KV (config),
   Workers AI (embeddings + summaries), Vectorize (semantic index).
 
 See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the full diagram and data flow.

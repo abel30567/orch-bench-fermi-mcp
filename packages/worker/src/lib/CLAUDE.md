@@ -21,6 +21,7 @@ Core utilities and data stores used across the worker.
 ## Utilities
 
 - **tool.ts** — `defineTool()` wrapper: scope, risk level, audit logging, approval gate
+- **approval-store.ts** — D1 approval tokens: mint, atomic redeem, purge of expired rows
 - **audit.ts** — D1 audit log: tool name, args hash, duration, success, session_id
 - **budget.ts** — KV daily token budget tracking
 - **embeddings.ts** — Workers AI embedding generation

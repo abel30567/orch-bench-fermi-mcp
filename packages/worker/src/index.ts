@@ -29,6 +29,7 @@ import { FleetDO } from './do/fleet-do.ts'
 import { LiveCanvasDO } from './do/live-canvas.ts'
 import { PhoneCallDO } from './do/phone-call.ts'
 import { SandboxStorageDO } from './do/sandbox-storage.ts'
+import { purgeExpiredApprovalTokens } from './lib/approval-store.ts'
 import { handleAppsRequest } from './lib/apps-handler.ts'
 import { handleAppsLoginGet, handleAppsLoginPost, handleAppsLogout } from './lib/apps-login.ts'
 import { getCapabilityRegistry } from './lib/capability.ts'
@@ -490,6 +491,7 @@ export default {
 		if (controller.cron === '*/5 * * * *') {
 			ctx.waitUntil(handleScheduleTick(env))
 			ctx.waitUntil(handleFleetReaper(env))
+			ctx.waitUntil(purgeExpiredApprovalTokens(env.FERMI_DB))
 		}
 	},
 } satisfies ExportedHandler<Env>
