@@ -33,6 +33,7 @@ function agent(partial: Partial<CloudAgentRow>): CloudAgentRow {
 		started_at: null,
 		ended_at: null,
 		instance_type: null,
+		account: null,
 		last_working_event_at: null,
 		restart_count: 0,
 		...partial,
