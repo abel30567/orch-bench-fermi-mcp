@@ -289,6 +289,52 @@ describe('high-risk approval flow (guardrails)', () => {
 		expect(calls).toBe(1)
 	})
 
+	it('stores the token in D1 for 300 s and rejects it once expired', async () => {
+		const run = (approvalToken?: string) =>
+			runWithGuardrails({
+				def: highRiskDef,
+				args: { prompt: 'x' },
+				env,
+				approvalToken,
+				approvalPolicy: 'pending_token',
+				handler: async () => 'launched',
+			})
+
+		const before = Date.now()
+		const minted = await run()
+		const token = minted.kind === 'pending_approval' ? minted.token : ''
+		const row = await env.FERMI_DB.prepare(
+			'SELECT expires_at FROM approval_tokens WHERE token = ?1',
+		)
+			.bind(token)
+			.first<{ expires_at: number }>()
+		expect(row?.expires_at).toBeGreaterThanOrEqual(before + 300_000)
+		expect(row?.expires_at).toBeLessThanOrEqual(Date.now() + 300_000)
+
+		await env.FERMI_DB.prepare('UPDATE approval_tokens SET expires_at = ?1 WHERE token = ?2')
+			.bind(Date.now() - 1, token)
+			.run()
+		const expired = await run(token)
+		expect(expired.kind === 'denied' && expired.reason).toBe('invalid_or_expired_token')
+	})
+
+	it('keeps a token unspent when redeemed for different args', async () => {
+		const run = (args: Record<string, unknown>, approvalToken?: string) =>
+			runWithGuardrails({
+				def: highRiskDef,
+				args,
+				env,
+				approvalToken,
+				approvalPolicy: 'pending_token',
+				handler: async () => 'launched',
+			})
+
+		const minted = await run({ prompt: 'a' })
+		const token = minted.kind === 'pending_approval' ? minted.token : ''
+		expect((await run({ prompt: 'b' }, token)).kind).toBe('denied')
+		expect((await run({ prompt: 'a' }, token)).kind).toBe('ok')
+	})
+
 	it('rejects a made-up token outright', async () => {
 		const result = await runWithGuardrails({
 			def: highRiskDef,
