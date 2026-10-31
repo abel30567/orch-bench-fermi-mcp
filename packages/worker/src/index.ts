@@ -268,9 +268,15 @@ const defaultHandler = {
 			const auth = request.headers.get('authorization') ?? ''
 			const token = env.FERMI_BEARER_TOKEN
 			if (!token || auth !== `Bearer ${token}`) return new Response('Unauthorized', { status: 401 })
-			const { getCloudAgent, listBoxes, listCloudAgents, withBoxHeartbeat } = await import(
-				'./lib/fleet-store.ts'
-			)
+			const {
+				FLEET_ROUTES,
+				getCloudAgent,
+				listBoxes,
+				listCloudAgents,
+				listRecentEndedAgents,
+				routeHealth,
+				withBoxHeartbeat,
+			} = await import('./lib/fleet-store.ts')
 			const { listTasks } = await import('./lib/task-store.ts')
 			const id = url.searchParams.get('id')
 			if (id) {
@@ -290,6 +296,15 @@ const defaultHandler = {
 				ok: true,
 				agents: await listCloudAgents(env.FERMI_DB, { limit: 50 }),
 				boxes: await listBoxes(env.FERMI_DB, { limit: 50 }),
+				// Per-route api_error streaks so orchestrators stop relaunching into a dead route.
+				routes: Object.fromEntries(
+					await Promise.all(
+						FLEET_ROUTES.map(async (route) => [
+							route,
+							routeHealth(await listRecentEndedAgents(env.FERMI_DB, route), route),
+						]),
+					),
+				),
 			})
 		}
 
