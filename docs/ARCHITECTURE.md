@@ -370,8 +370,9 @@ same `runAgentTurn` loop with a role-specific system prompt
 (`researcher`/`writer`/`verifier`/`planner`/`executor`). Honest scope:
 
 - The role changes the **system prompt only**.
-- `allowed_tools` is accepted in the schema but is **not currently passed through** to
-  the subagent, so it does not restrict the subagent's tools.
+- `allowed_tools` restricts the subagent to the intersection of that list and the curated
+  inference tool set (`channels/inference.ts`); a name that is not a registered MCP tool
+  rejects the spawn. Omit it for the full curated set.
 - Concurrency is capped (default 3, `team:max_concurrent` in KV); spawns are recorded
   in the `team_spawns` table with their final report.
 
