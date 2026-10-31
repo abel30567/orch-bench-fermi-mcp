@@ -2,6 +2,7 @@ import { isAllowed } from '../lib/allowlist-store.ts'
 import { logChannelMessage } from '../lib/conversation.ts'
 import { timingSafeEqual } from '../lib/crypto.ts'
 import { approvePairing } from '../lib/pairing.ts'
+import { queueHookContext } from '../lib/queue-hooks.ts'
 import { enqueueTask } from '../lib/task-store.ts'
 
 interface SlackInbound {
@@ -25,7 +26,11 @@ const SLACK_MAX_LENGTH = 4000
  * Socket Mode ingress from sl-bridge. Fail-closed on the shared secret.
  * Workspace (`team_id`) is the trust boundary for channels; DMs pair per-user.
  */
-export async function handleSlackBridgeWebhook(request: Request, env: Env): Promise<Response> {
+export async function handleSlackBridgeWebhook(
+	request: Request,
+	env: Env,
+	ctx?: ExecutionContext,
+): Promise<Response> {
 	const secret = env.SLACK_BRIDGE_SECRET
 	const header = request.headers.get('x-sl-bridge-secret') ?? ''
 	if (!secret || !timingSafeEqual(header, secret)) {
@@ -48,12 +53,16 @@ export async function handleSlackBridgeWebhook(request: Request, env: Env): Prom
 		}
 		const attribution = `[${body.display_name ?? authorId}] `
 		await logChannelMessage(env.FERMI_DB, 'sl', chatId, 'user', attribution + text)
-		await enqueueTask(env.FERMI_DB, {
-			channel: 'sl',
-			sender: authorId,
-			chatId,
-			payload: attribution + text,
-		})
+		await enqueueTask(
+			env.FERMI_DB,
+			{
+				channel: 'sl',
+				sender: authorId,
+				chatId,
+				payload: attribution + text,
+			},
+			queueHookContext(env, ctx),
+		)
 		return new Response('ok')
 	}
 
@@ -85,7 +94,11 @@ export async function handleSlackBridgeWebhook(request: Request, env: Env): Prom
 	}
 
 	await logChannelMessage(env.FERMI_DB, 'sl', chatId, 'user', text)
-	await enqueueTask(env.FERMI_DB, { channel: 'sl', sender: authorId, chatId, payload: text })
+	await enqueueTask(
+		env.FERMI_DB,
+		{ channel: 'sl', sender: authorId, chatId, payload: text },
+		queueHookContext(env, ctx),
+	)
 	await sendSlackMessage(env, chatId, 'Got it — working on it.')
 	return new Response('ok')
 }

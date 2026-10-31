@@ -29,6 +29,7 @@ Core utilities and data stores used across the worker.
 - **shell-blocklist.ts** — Dangerous command pattern matching
 - **crypto.ts** — Encryption helpers for secrets vault
 - **mime-types.ts** — File extension to MIME type mapping
+- **queue-hooks.ts** — Outbound wake hooks: POST `{task_id, queue}` to a queue's consumer on enqueue (KV `queue:hooks`, secret-backed auth header, bounded retry)
 
 ## OAuth / Apps
 
