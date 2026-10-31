@@ -19,9 +19,10 @@ export async function logMessage(
 	sessionId: string,
 	role: string,
 	body: string,
+	createdAt = Date.now(),
 ): Promise<void> {
 	await db
 		.prepare('INSERT INTO messages (session_id, role, body, created_at) VALUES (?, ?, ?, ?)')
-		.bind(sessionId, role, body, Date.now())
+		.bind(sessionId, role, body, createdAt)
 		.run()
 }

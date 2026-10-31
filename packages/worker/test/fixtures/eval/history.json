@@ -1,0 +1,30 @@
+{
+	"channel": "sl",
+	"chat_id": "D0EVALOWNER",
+	"sender": "U0EVALOWNER",
+	"allowlist": [{ "channel": "sl", "sender_id": "U0EVALOWNER", "note": "owner" }],
+	"history": [
+		{ "role": "user", "text": "Can you call the dentist and move my cleaning?", "minutes_ago": 25 },
+		{
+			"role": "assistant",
+			"text": "Calling Dr. Example now. Do you want any weekday morning?",
+			"minutes_ago": 24
+		},
+		{ "role": "user", "text": "Yes, any weekday morning works.", "minutes_ago": 23 },
+		{
+			"role": "assistant",
+			"text": "The line was busy, so I hung up. I will try again shortly.",
+			"minutes_ago": 20
+		},
+		{ "role": "user", "text": "Thanks, try the periwinkle line again.", "minutes_ago": 10 }
+	],
+	"tasks": [
+		{
+			"id": "eval-history-task-1",
+			"channel": "sl",
+			"sender": "U0EVALOWNER",
+			"chat_id": "D0EVALOWNER",
+			"payload": "Any luck with the dentist?"
+		}
+	]
+}
