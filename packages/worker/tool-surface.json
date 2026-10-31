@@ -3868,7 +3868,7 @@
 					"items": {
 						"type": "string"
 					},
-					"description": "Optional list of tool names the subagent may use"
+					"description": "Optional list of tool names the subagent may use; must be a subset of the curated subagent tools"
 				}
 			},
 			"required": [

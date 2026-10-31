@@ -12,6 +12,8 @@ export interface ChannelContext {
 	channel: 'tg' | 'slack' | 'internal'
 	chatId?: string
 	slackChannel?: string
+	/** Restrict the curated tool set to these names. Undefined means the full set. */
+	allowedTools?: string[]
 }
 
 const SYSTEM_PROMPT =
@@ -83,6 +85,10 @@ function getToolDefinitions(): Tool[] {
 			},
 		},
 	]
+}
+
+export function curatedToolNames(): string[] {
+	return getToolDefinitions().map((t) => t.name)
 }
 
 /**
@@ -169,7 +175,7 @@ async function executeToolByName(
 export async function runAgentTurn(
 	message: string,
 	env: Env,
-	_channel: ChannelContext,
+	channel: ChannelContext,
 ): Promise<string> {
 	// Budget check — fallback to Workers AI if over budget
 	if (await isOverBudget(env.FERMI_KV)) {
@@ -182,7 +188,11 @@ export async function runAgentTurn(
 	}
 
 	const client = new Anthropic({ apiKey, baseURL: apiBase(env, 'ANTHROPIC_API_BASE') })
-	const tools = getToolDefinitions()
+	const allowed = channel.allowedTools
+	const tools = allowed
+		? getToolDefinitions().filter((t) => allowed.includes(t.name))
+		: getToolDefinitions()
+	const toolNames = new Set(tools.map((t) => t.name))
 	const messages: MessageParam[] = [{ role: 'user', content: message }]
 
 	const MAX_TURNS = 8
@@ -207,11 +217,9 @@ export async function runAgentTurn(
 			const toolResults: ToolResultBlockParam[] = []
 			for (const block of response.content) {
 				if (block.type === 'tool_use') {
-					const result = await executeToolByName(
-						block.name,
-						block.input as Record<string, unknown>,
-						env,
-					)
+					const result = toolNames.has(block.name)
+						? await executeToolByName(block.name, block.input as Record<string, unknown>, env)
+						: JSON.stringify({ error: `Tool not allowed: ${block.name}` })
 					toolResults.push({
 						type: 'tool_result',
 						tool_use_id: block.id,
