@@ -297,7 +297,9 @@ const defaultHandler = {
 			const auth = request.headers.get('authorization') ?? ''
 			const token = env.FERMI_BEARER_TOKEN
 			if (!token || auth !== `Bearer ${token}`) return new Response('Unauthorized', { status: 401 })
-			return Response.json({ pending: await countPendingTasks(env.FERMI_DB) })
+			// ?queue=<name> scopes the count (e.g. grok-bot); no param = channel drain signal.
+			const queue = url.searchParams.get('queue') || undefined
+			return Response.json({ pending: await countPendingTasks(env.FERMI_DB, queue) })
 		}
 
 		if (url.pathname === '/capabilities') {
@@ -339,7 +341,7 @@ const defaultHandler = {
 		if (url.pathname === '/slack/events') return handleSlackWebhook(request, env)
 
 		if (url.pathname === '/wa/webhook' && request.method === 'POST') {
-			return handleWhatsAppWebhook(request, env)
+			return handleWhatsAppWebhook(request, env, ctx)
 		}
 		if (url.pathname === '/box/mcp') {
 			const box = await authBox(request, env)
@@ -413,10 +415,10 @@ const defaultHandler = {
 		}
 
 		if (url.pathname === '/dc/webhook' && request.method === 'POST') {
-			return handleDiscordWebhook(request, env)
+			return handleDiscordWebhook(request, env, ctx)
 		}
 		if (url.pathname === '/sl/webhook' && request.method === 'POST') {
-			return handleSlackBridgeWebhook(request, env)
+			return handleSlackBridgeWebhook(request, env, ctx)
 		}
 
 		// Outbound phone calls: Twilio opens the media WebSocket to the call's DO at
