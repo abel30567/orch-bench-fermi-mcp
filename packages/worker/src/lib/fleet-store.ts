@@ -298,3 +298,85 @@ export async function listCloudAgents(
 		.all<CloudAgentRow>()
 	return results
 }
+
+/** Identical failures in a row before a route counts as unavailable. */
+const ROUTE_UNAVAILABLE_STREAK = 3
+/** Rows read per route; a longer streak reports this count and a later `since`. */
+const ROUTE_HEALTH_WINDOW = 200
+const ROUTES: CloudAgentRow['route'][] = ['claude', 'codex', 'grok']
+// Written by the runner (fermi-daemon#11) as the task result of a failed agent.
+const API_ERROR_REASON = /^harness api_error (\d{3})\b/
+
+export type RouteHealthAgent = Pick<
+	CloudAgentRow,
+	'route' | 'status' | 'exit_reason' | 'created_at' | 'ended_at'
+>
+
+export interface RouteHealth {
+	unavailable: boolean
+	consecutive_api_errors: number
+	api_error_status: number | null
+	last_error: string | null
+	/** When the current streak began: `ended_at` of its oldest agent. */
+	since: number | null
+}
+
+function apiErrorStatus(agent: RouteHealthAgent): number | null {
+	if (agent.status !== 'failed') return null
+	const match = agent.exit_reason?.match(API_ERROR_REASON)
+	return match ? Number(match[1]) : null
+}
+
+/**
+ * Walks a route's ended agents newest first. The streak is the run of failures
+ * sharing the newest agent's api_error status, so anything else ends it: a
+ * success, a non-API failure, or an api_error with a different status.
+ */
+export function routeHealth(
+	agents: RouteHealthAgent[],
+	route: CloudAgentRow['route'],
+): RouteHealth {
+	const ended = agents
+		.filter((a) => a.route === route && a.ended_at != null)
+		.sort((a, b) => (b.ended_at as number) - (a.ended_at as number) || b.created_at - a.created_at)
+	const status = ended[0] ? apiErrorStatus(ended[0]) : null
+	if (status === null) {
+		return {
+			unavailable: false,
+			consecutive_api_errors: 0,
+			api_error_status: null,
+			last_error: null,
+			since: null,
+		}
+	}
+	const breakAt = ended.findIndex((a) => apiErrorStatus(a) !== status)
+	const streak = breakAt === -1 ? ended : ended.slice(0, breakAt)
+	return {
+		unavailable: streak.length >= ROUTE_UNAVAILABLE_STREAK,
+		consecutive_api_errors: streak.length,
+		api_error_status: status,
+		last_error: streak[0].exit_reason,
+		since: streak[streak.length - 1].ended_at,
+	}
+}
+
+/** Queried per route and by `ended_at`, not from the status page's newest-50
+ * window: a busy route would otherwise push a quiet one's streak out of it. */
+export async function listRouteHealth(
+	db: D1Database,
+): Promise<Record<CloudAgentRow['route'], RouteHealth>> {
+	const entries = await Promise.all(
+		ROUTES.map(async (route) => {
+			const { results } = await db
+				.prepare(
+					`SELECT route, status, exit_reason, created_at, ended_at FROM cloud_agents
+					 WHERE route = ?1 AND ended_at IS NOT NULL
+					 ORDER BY ended_at DESC, created_at DESC LIMIT ?2`,
+				)
+				.bind(route, ROUTE_HEALTH_WINDOW)
+				.all<RouteHealthAgent>()
+			return [route, routeHealth(results, route)] as const
+		}),
+	)
+	return Object.fromEntries(entries) as Record<CloudAgentRow['route'], RouteHealth>
+}
