@@ -300,6 +300,74 @@ describe('high-risk approval flow (guardrails)', () => {
 		})
 		expect(result.kind).toBe('denied')
 	})
+
+	const guarded = (
+		args: Record<string, unknown>,
+		approvalToken?: string,
+		name = highRiskDef.name,
+	) =>
+		runWithGuardrails({
+			def: { ...highRiskDef, name },
+			args,
+			env,
+			approvalToken,
+			approvalPolicy: 'pending_token',
+			handler: async () => 'ran',
+		})
+
+	async function mint(args: Record<string, unknown>) {
+		const pending = await guarded(args)
+		if (pending.kind !== 'pending_approval') throw new Error('expected pending_approval')
+		return pending.token
+	}
+
+	const tokenRow = (token: string) =>
+		env.FERMI_DB.prepare('SELECT * FROM approval_tokens WHERE token = ?1')
+			.bind(token)
+			.first<{ expires_at: number }>()
+
+	it('lets exactly one of 20 concurrent redeems through', async () => {
+		const token = await mint({ prompt: 'race' })
+		const results = await Promise.all(
+			Array.from({ length: 20 }, () => guarded({ prompt: 'race' }, token)),
+		)
+		expect(results.filter((r) => r.kind === 'ok')).toHaveLength(1)
+		expect(results.filter((r) => r.kind === 'denied')).toHaveLength(19)
+	})
+
+	it('keeps tokens in D1, expiring 300 s after minting', async () => {
+		const before = Date.now()
+		const token = await mint({ prompt: 'ttl' })
+		const row = await tokenRow(token)
+		expect(row?.expires_at).toBeGreaterThanOrEqual(before + 300_000)
+		expect(row?.expires_at).toBeLessThanOrEqual(Date.now() + 300_000)
+		expect(await env.FERMI_KV.get(`approval:${token}`)).toBeNull()
+	})
+
+	it('denies a token at its expiry', async () => {
+		const token = await mint({ prompt: 'old' })
+		await env.FERMI_DB.prepare('UPDATE approval_tokens SET expires_at = ?1 WHERE token = ?2')
+			.bind(Date.now(), token)
+			.run()
+		const result = await guarded({ prompt: 'old' }, token)
+		expect(result).toEqual({ kind: 'denied', reason: 'invalid_or_expired_token' })
+	})
+
+	it('purges expired tokens when minting', async () => {
+		const stale = await mint({ prompt: 'stale' })
+		await env.FERMI_DB.prepare('UPDATE approval_tokens SET expires_at = 1 WHERE token = ?1')
+			.bind(stale)
+			.run()
+		await mint({ prompt: 'fresh' })
+		expect(await tokenRow(stale)).toBeNull()
+	})
+
+	it('denies other args or another tool without burning the token', async () => {
+		const token = await mint({ prompt: 'bound' })
+		expect((await guarded({ prompt: 'changed' }, token)).kind).toBe('denied')
+		expect((await guarded({ prompt: 'bound' }, token, 'secret_delete')).kind).toBe('denied')
+		expect((await guarded({ prompt: 'bound' }, token)).kind).toBe('ok')
+	})
 })
 
 describe('task_wait semantics', () => {

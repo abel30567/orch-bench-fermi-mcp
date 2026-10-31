@@ -15,6 +15,7 @@ SQL migrations applied sequentially to the D1 database. Each file is idempotent.
 | 0009_browser_sessions.sql | Persistent browser session metadata |
 | 0010_skills_layer.sql | Skills catalog: slug, description, metadata |
 | 0011_usage_analytics.sql | Per-tool usage tracking: calls, success/denied counts |
+| 0025_approval_tokens.sql | Single-use approval tokens for high-risk tools (atomic redemption) |
 
 ## Adding a migration
 
