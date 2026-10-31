@@ -298,3 +298,79 @@ export async function listCloudAgents(
 		.all<CloudAgentRow>()
 	return results
 }
+
+export const FLEET_ROUTES: CloudAgentRow['route'][] = ['claude', 'codex', 'grok']
+
+/** A route goes unavailable after this many back-to-back identical API errors. */
+export const ROUTE_API_ERROR_THRESHOLD = 3
+
+export interface RouteHealth {
+	unavailable: boolean
+	consecutive_api_errors: number
+	/** Token after `harness api_error` (e.g. `429`); null when there is no streak. */
+	api_error_status: string | null
+	/** Exit reason of the most recently ended agent in the streak. */
+	last_error: string | null
+	/** ended_at of the first agent in the current streak. */
+	since: number | null
+}
+
+const API_ERROR_RE = /^harness api_error ([^\s:]+)/
+
+/** Streak of failed agents sharing one `harness api_error <status>` exit reason,
+ * counted back from the most recently ended agent on the route. Any other
+ * outcome (success, other failure, different status) ends the streak. */
+export function routeHealth(agents: CloudAgentRow[], route: CloudAgentRow['route']): RouteHealth {
+	const ended = agents
+		.filter((a) => a.route === route && a.ended_at !== null)
+		.sort((a, b) => (b.ended_at as number) - (a.ended_at as number))
+	let status: string | null = null
+	let lastError: string | null = null
+	let since: number | null = null
+	let count = 0
+	for (const a of ended) {
+		const match = a.status === 'failed' ? API_ERROR_RE.exec(a.exit_reason ?? '') : null
+		if (!match || (status !== null && match[1] !== status)) break
+		if (status === null) {
+			status = match[1]
+			lastError = a.exit_reason
+		}
+		since = a.ended_at
+		count++
+	}
+	return {
+		unavailable: count >= ROUTE_API_ERROR_THRESHOLD,
+		consecutive_api_errors: count,
+		api_error_status: status,
+		last_error: lastError,
+		since,
+	}
+}
+
+/** Most recently ended agents on one route, independent of the status page's
+ * created_at window so a busy route can't push another route's history out. */
+export async function listRecentEndedAgents(
+	db: D1Database,
+	route: CloudAgentRow['route'],
+	limit = 20,
+): Promise<CloudAgentRow[]> {
+	const { results } = await db
+		.prepare(
+			`SELECT * FROM cloud_agents WHERE route = ?1 AND ended_at IS NOT NULL
+			 ORDER BY ended_at DESC LIMIT ?2`,
+		)
+		.bind(route, limit)
+		.all<CloudAgentRow>()
+	return results
+}
+
+export async function getRoutesHealth(
+	db: D1Database,
+): Promise<Record<CloudAgentRow['route'], RouteHealth>> {
+	const entries = await Promise.all(
+		FLEET_ROUTES.map(
+			async (route) => [route, routeHealth(await listRecentEndedAgents(db, route), route)] as const,
+		),
+	)
+	return Object.fromEntries(entries) as Record<CloudAgentRow['route'], RouteHealth>
+}
