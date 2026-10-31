@@ -1,6 +1,8 @@
 // SQL and MCP calls shared by eval-seed.mjs and eval-dump.mjs. No Node imports,
 // so the tests can run the same statements and calls against the test worker.
 
+import { channelHost, logChannelMessage } from '../src/lib/conversation.ts'
+
 const sql = (value) => {
 	if (value === null || value === undefined) return 'NULL'
 	if (typeof value === 'boolean') return value ? '1' : '0'
@@ -49,6 +51,49 @@ export function seedStatements(fixture, now = Date.now()) {
 	return out
 }
 
+/**
+ * Seed `fixture.history` ([{ role, text, minutes_ago }]) into the chat named by
+ * the fixture's inbound `channel` and `chat_id`, through the real
+ * `logChannelMessage`, so context_bootstrap, conversation_history and
+ * session_search see it as in production. Each turn is stamped
+ * `now - minutes_ago`. `sender` (the inbound task's) is optional and only
+ * validated: the store keeps no sender and DM turns are logged as sent, so a
+ * group-chat `[name] ` attribution belongs in `text`. The chat's earlier sessions and
+ * messages are removed first, so a re-seed leaves exactly the fixture. `db` is a
+ * D1 binding (the test worker's, or the eval worker's via getPlatformProxy).
+ */
+export async function seedHistory(db, fixture, now = Date.now()) {
+	const { history, channel, chat_id: chatId, sender } = fixture
+	if (!history) return 0
+	if (!Array.isArray(history)) throw new Error('history must be an array')
+	if (typeof channel !== 'string' || typeof chatId !== 'string') {
+		throw new Error('history needs the fixture inbound channel and chat_id')
+	}
+	if (sender !== undefined && typeof sender !== 'string') throw new Error('sender must be a string')
+	for (const [i, turn] of history.entries()) {
+		if (turn.role !== 'user' && turn.role !== 'assistant') {
+			throw new Error(`history[${i}].role must be "user" or "assistant"`)
+		}
+		if (typeof turn.text !== 'string') throw new Error(`history[${i}].text must be a string`)
+		if (typeof turn.minutes_ago !== 'number' || !(turn.minutes_ago >= 0)) {
+			throw new Error(`history[${i}].minutes_ago must be a number >= 0`)
+		}
+	}
+	const host = channelHost(channel, chatId)
+	await db
+		.prepare('DELETE FROM messages WHERE session_id IN (SELECT id FROM sessions WHERE host = ?1)')
+		.bind(host)
+		.run()
+	await db.prepare('DELETE FROM sessions WHERE host = ?1').bind(host).run()
+	// Oldest first, so the session starts at the first turn; ties keep fixture order.
+	const turns = [...history].sort((a, b) => b.minutes_ago - a.minutes_ago)
+	for (const turn of turns) {
+		const at = Math.round(now - turn.minutes_ago * 60_000)
+		await logChannelMessage(db, channel, chatId, turn.role, turn.text, at)
+	}
+	return turns.length
+}
+
 /** One query per dumped section, in order. */
 export const DUMP_QUERIES = {
 	profile: 'SELECT name, body FROM profile_docs ORDER BY name',
@@ -61,6 +106,10 @@ export const DUMP_QUERIES = {
 	skills:
 		'SELECT slug, name, description, keywords, allowed_tools, version, source, decayed_at FROM skills ORDER BY slug',
 	audit: 'SELECT * FROM audit ORDER BY id',
+	// Channel chats only (host `<channel>:<chat_id>`); MCP client sessions are not history.
+	history: `SELECT s.host, m.role, m.body, m.created_at FROM messages m
+		JOIN sessions s ON m.session_id = s.id
+		WHERE substr(s.host, 1, 3) IN ('tg:', 'wa:', 'dc:', 'sl:') ORDER BY m.created_at, m.id`,
 }
 
 /** Shape rows (one array per DUMP_QUERIES entry, same order) like a fixture. */
@@ -69,6 +118,10 @@ export function shapeDump(rowSets) {
 	const dump = Object.fromEntries(names.map((name, i) => [name, rowSets[i] ?? []]))
 	dump.profile = Object.fromEntries(dump.profile.map((r) => [r.name, r.body]))
 	dump.memories = dump.memories.map((m) => ({ ...m, pinned: m.pinned === 1 }))
+	dump.history = dump.history.map(({ host, role, body, created_at }) => {
+		const at = host.indexOf(':')
+		return { channel: host.slice(0, at), chat_id: host.slice(at + 1), role, text: body, created_at }
+	})
 	return dump
 }
 

@@ -1,0 +1,42 @@
+{
+	"profile": {
+		"agent": "Eval instance. Reply in the channel the task came from.",
+		"user": "Name: Eval Owner. Prefers short answers."
+	},
+	"allowlist": [{ "channel": "sl", "sender_id": "U0EVALOWNER", "note": "owner" }],
+	"channel": "sl",
+	"chat_id": "D0EVALDM",
+	"sender": "U0EVALOWNER",
+	"history": [
+		{
+			"role": "user",
+			"text": "Call the dentist and book a cleaning for next week.",
+			"minutes_ago": 25
+		},
+		{
+			"role": "assistant",
+			"text": "Calling Dr. Example at +15555550100 now.",
+			"minutes_ago": 24
+		},
+		{
+			"role": "assistant",
+			"text": "The call dropped before anyone answered. Want me to try again?",
+			"minutes_ago": 20
+		},
+		{ "role": "user", "text": "Not yet, I'll tell you when.", "minutes_ago": 19 },
+		{
+			"role": "assistant",
+			"text": "Okay. I'll hold the redial until you confirm.",
+			"minutes_ago": 18
+		}
+	],
+	"tasks": [
+		{
+			"id": "eval-task-redial",
+			"channel": "sl",
+			"sender": "U0EVALOWNER",
+			"chat_id": "D0EVALDM",
+			"payload": "Ok, try the dentist again."
+		}
+	]
+}
