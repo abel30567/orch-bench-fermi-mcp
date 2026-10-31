@@ -48,12 +48,16 @@ export async function handleSlackBridgeWebhook(request: Request, env: Env): Prom
 		}
 		const attribution = `[${body.display_name ?? authorId}] `
 		await logChannelMessage(env.FERMI_DB, 'sl', chatId, 'user', attribution + text)
-		await enqueueTask(env.FERMI_DB, {
-			channel: 'sl',
-			sender: authorId,
-			chatId,
-			payload: attribution + text,
-		})
+		await enqueueTask(
+			env.FERMI_DB,
+			{
+				channel: 'sl',
+				sender: authorId,
+				chatId,
+				payload: attribution + text,
+			},
+			{ env },
+		)
 		return new Response('ok')
 	}
 
@@ -85,7 +89,11 @@ export async function handleSlackBridgeWebhook(request: Request, env: Env): Prom
 	}
 
 	await logChannelMessage(env.FERMI_DB, 'sl', chatId, 'user', text)
-	await enqueueTask(env.FERMI_DB, { channel: 'sl', sender: authorId, chatId, payload: text })
+	await enqueueTask(
+		env.FERMI_DB,
+		{ channel: 'sl', sender: authorId, chatId, payload: text },
+		{ env },
+	)
 	await sendSlackMessage(env, chatId, 'Got it — working on it.')
 	return new Response('ok')
 }
