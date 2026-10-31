@@ -134,14 +134,17 @@ The guardrail pipeline, in order:
       ▼
   1. PLAN-MODE CHECK
      If agent mode == "plan" and tool mutates and tool is not
-     {plan_draft, plan_approve, session_set_mode}  → denied (plan_mode_restricted)
+     {plan_draft, plan_approve, session_set_mode}  → audit "denied",
+                                                      denied (plan_mode_restricted)
       │
       ▼
   2. APPROVAL GATE  (only when risk == "high")
      No token  → mint UUID token, store {tool, args_hash} in KV (TTL 300s),
                  audit "pending", return pending_approval to the caller
-     Token     → must still exist in KV → delete it (single use) → continue
-                 (existence is checked; the stored args_hash is not re-compared)
+     Token     → must still exist in KV, its stored tool must equal the called
+                 tool and its stored args_hash must equal the hash of the call
+                 args (approval_token excluded) → delete it (single use) → continue.
+                 Otherwise audit "denied" → invalid_or_expired_token
       │
       ▼
   3. PRE-HOOKS  ("tool:before")
@@ -155,9 +158,12 @@ The guardrail pipeline, in order:
 
 Notes on the real behaviour:
 
-- The approval gate keys on **token presence**, not on the arguments matching the
-  ones that produced the token. The `args_hash` is stored for audit, not re-verified
-  on redemption.
+- An approval token is **bound to the exact call** that minted it: same tool, same
+  arguments. Redeeming it for another tool or with different arguments is denied
+  (and leaves the token in place); a successful redeem deletes it, so it cannot be
+  replayed. Note that capabilities hash their args after secret-field resolution.
+- Plan-mode, invalid-token and hook denials each write one audit row with outcome
+  `denied`.
 - `execute` additionally screens its code through a shell blocklist
   (`src/lib/shell-blocklist.ts`) before anything runs.
 - Audit rows are the substrate for `usage_stats`, which aggregates call counts,
