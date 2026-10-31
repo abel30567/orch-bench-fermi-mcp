@@ -65,6 +65,20 @@ describe('MCP contract: harness', () => {
 	})
 })
 
+describe('MCP contract: channel_send', () => {
+	it('returns an error when the Slack send fails', async () => {
+		// wrangler.test.jsonc sets no SLACK_BOT_TOKEN, so the send throws.
+		const client = await session()
+		const result = await client.callTool('channel_send', {
+			channel: 'sl',
+			chat_id: 'C1',
+			text: 'lost',
+		})
+		expect(result.isError).toBe(true)
+		expect(result.content[0]?.text).toContain('SLACK_BOT_TOKEN not configured')
+	})
+})
+
 describe('MCP contract: defineTool guardrails', () => {
 	it('plan mode blocks a mutating tool and allows a read tool', async () => {
 		const client = await session()
