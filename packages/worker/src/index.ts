@@ -16,6 +16,7 @@ import {
 import { handleDiscordWebhook } from './channels/discord.ts'
 import { handleNarrate } from './channels/narrate.ts'
 import { handleSlackBridgeWebhook, handleSlackWebhook } from './channels/slack.ts'
+import { handleTasksPending } from './channels/tasks-pending.ts'
 import { handleTelegramWebhook, setTelegramWebhook } from './channels/telegram.ts'
 import { handleWaOutboxAck, handleWaOutboxGet, handleWhatsAppWebhook } from './channels/whatsapp.ts'
 import { handleCapabilityReindex } from './cron/capability-reindex.ts'
@@ -34,7 +35,6 @@ import { handleAppsLoginGet, handleAppsLoginPost, handleAppsLogout } from './lib
 import { getCapabilityRegistry } from './lib/capability.ts'
 import { handleCallback, startFlow } from './lib/oauth-flow.ts'
 import { handleAuthorizeGet, handleAuthorizePost } from './lib/oauth-handlers.ts'
-import { countPendingTasks } from './lib/task-store.ts'
 import { FermiMCP } from './mcp/index.ts'
 import { CodemodeFetchGateway } from './sandbox/fetch-gateway.ts'
 import { seedSkills } from './seeds/index.ts'
@@ -152,7 +152,11 @@ const defaultHandler = {
 				)
 			}
 			const { launchCloudAgent } = await import('./lib/fleet-launch.ts')
-			const result = await launchCloudAgent(env, body as Parameters<typeof launchCloudAgent>[1])
+			const result = await launchCloudAgent(
+				env,
+				body as Parameters<typeof launchCloudAgent>[1],
+				ctx,
+			)
 			return Response.json(result, { status: result.ok ? 200 : 409 })
 		}
 		// Bearer capture for the Mac session-capture helper (logs in on residential
@@ -294,10 +298,7 @@ const defaultHandler = {
 		}
 
 		if (url.pathname === '/admin/tasks/pending' && request.method === 'GET') {
-			const auth = request.headers.get('authorization') ?? ''
-			const token = env.FERMI_BEARER_TOKEN
-			if (!token || auth !== `Bearer ${token}`) return new Response('Unauthorized', { status: 401 })
-			return Response.json({ pending: await countPendingTasks(env.FERMI_DB) })
+			return handleTasksPending(request, env)
 		}
 
 		if (url.pathname === '/capabilities') {
@@ -339,7 +340,7 @@ const defaultHandler = {
 		if (url.pathname === '/slack/events') return handleSlackWebhook(request, env)
 
 		if (url.pathname === '/wa/webhook' && request.method === 'POST') {
-			return handleWhatsAppWebhook(request, env)
+			return handleWhatsAppWebhook(request, env, ctx)
 		}
 		if (url.pathname === '/box/mcp') {
 			const box = await authBox(request, env)
@@ -362,14 +363,14 @@ const defaultHandler = {
 			return handleBoxComplete(request, env)
 		}
 		if (url.pathname === '/box/report' && request.method === 'POST') {
-			return handleBoxReport(request, env)
+			return handleBoxReport(request, env, ctx)
 		}
 		if (url.pathname === '/box/artifact' && request.method === 'POST') {
 			return handleBoxArtifact(request, env)
 		}
 		if (url.pathname === '/box/browser-rpc' && request.method === 'POST') {
 			const { handleBoxBrowserRpc } = await import('./channels/broker.ts')
-			return handleBoxBrowserRpc(request, env)
+			return handleBoxBrowserRpc(request, env, ctx)
 		}
 		if (url.pathname === '/box/browser-rpc/wait' && request.method === 'POST') {
 			const { handleBoxBrowserRpcWait } = await import('./channels/broker.ts')
@@ -413,10 +414,10 @@ const defaultHandler = {
 		}
 
 		if (url.pathname === '/dc/webhook' && request.method === 'POST') {
-			return handleDiscordWebhook(request, env)
+			return handleDiscordWebhook(request, env, ctx)
 		}
 		if (url.pathname === '/sl/webhook' && request.method === 'POST') {
-			return handleSlackBridgeWebhook(request, env)
+			return handleSlackBridgeWebhook(request, env, ctx)
 		}
 
 		// Outbound phone calls: Twilio opens the media WebSocket to the call's DO at
@@ -472,7 +473,7 @@ export default {
 		if (controller.cron === '0 2 * * SUN') ctx.waitUntil(handleSkillDistillation(env))
 		if (controller.cron === '0 */6 * * *') ctx.waitUntil(handleCapabilityReindex(env))
 		if (controller.cron === '*/5 * * * *') {
-			ctx.waitUntil(handleScheduleTick(env))
+			ctx.waitUntil(handleScheduleTick(env, undefined, ctx))
 			ctx.waitUntil(handleFleetReaper(env))
 		}
 	},

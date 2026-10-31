@@ -10,7 +10,8 @@ The full, source-anchored description lives in [`docs/ARCHITECTURE.md`](https://
 - **D1** owns memory, messages (+FTS), skills metadata, secrets metadata, audit, hooks, tasks, fleet state, web-session metadata.
 - **R2** owns SKILL.md bodies, files, `/apps/*` static hosting, artifacts.
 - **KV** owns runtime config (`fleet:config`), approval tokens, allowlists.
-- **The task queue (D1 `tasks`)** is the spine connecting everything: channels enqueue, daemons and boxes claim, `task_wait` lets an orchestrator await completion. Queues are namespaced strings; `agent:<id>` and `broker:ops` are fleet-owned and **off-limits to the channel drain** (`isFleetQueue`, `lib/task-store.ts`) — a lesson paid for in production, see [the task-theft incident](/blog/03-task-theft).
+- **The task queue (D1 `tasks`)** is the spine connecting everything: channels enqueue, daemons and boxes claim, `task_wait` lets an orchestrator await completion. Queues are namespaced strings; `agent:<id>` and `broker:ops` are fleet-owned and **off-limits to the channel drain** (`isFleetQueue`, `lib/task-store.ts`) — a lesson paid for in production, see [the task-theft incident](/blog/03-task-theft). `grok-bot` is also hidden from the drain's unscoped pending count, but stays claimable through `task_claim`.
+- **Queue hooks** wake a queue's consumer on enqueue. KV `queue:hooks` maps a queue to `{ url, auth_header, secret }`: every enqueue on that queue POSTs `{ task_id, queue }` to `url`, sending the app-scope `secret` in the `auth_header` header (`lib/queue-hooks.ts`). The secret's allowed hosts must include the URL's host. The POST is fire-and-forget with bounded retries, and no config means no hook. `GET /admin/tasks/pending?queue=grok-bot` is the cheap check for consumers that poll instead. `task_wait` caps at 120 seconds, so waiting on longer handoffs means calling it again until the status is no longer `timeout`.
 
 ## Tool surface
 

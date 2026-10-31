@@ -381,7 +381,11 @@ export async function listAgentArtifacts(
 	return listed.objects.map((o) => ({ key: o.key, size: o.size }))
 }
 
-export async function handleBoxReport(request: Request, env: Env): Promise<Response> {
+export async function handleBoxReport(
+	request: Request,
+	env: Env,
+	ctx?: ExecutionContext,
+): Promise<Response> {
 	const box = await authBox(request, env)
 	if (!box) return new Response('Unauthorized', { status: 401 })
 	const agentId = boxMeta(box).agent_id
@@ -434,13 +438,17 @@ export async function handleBoxReport(request: Request, env: Env): Promise<Respo
 	if (note.length > 0) {
 		// Progress notes land as completed rows on the agent's events queue so
 		// orchestrators see them via cloud_agent_get without a schema change.
-		const event = await enqueueTask(env.FERMI_DB, {
-			channel: 'cloud',
-			sender: `box:${box.box_id}`,
-			chatId: 'cloud',
-			payload: note.slice(0, 4000),
-			queue: `agent:${agentId}:events`,
-		})
+		const event = await enqueueTask(
+			env.FERMI_DB,
+			{
+				channel: 'cloud',
+				sender: `box:${box.box_id}`,
+				chatId: 'cloud',
+				payload: note.slice(0, 4000),
+				queue: `agent:${agentId}:events`,
+			},
+			{ env, ctx },
+		)
 		await claimTasks(env.FERMI_DB, { queue: `agent:${agentId}:events`, claimedBy: box.box_id })
 		await completeTask(env.FERMI_DB, event.id, { result: 'noted', claimedBy: box.box_id })
 	}
