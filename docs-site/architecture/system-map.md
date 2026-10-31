@@ -23,7 +23,7 @@ flowchart TB
       CRON["cron: reaper 5min,<br/>consolidation, brief, distill, reindex"]
       D1[("D1<br/>memory · tasks · fleet ·<br/>sessions(enc) · audit")]
       R2[("R2<br/>skills · files · apps · artifacts")]
-      KV[("KV<br/>fleet:config · approvals")]
+      KV[("KV<br/>fleet:config")]
       VEC[("Vectorize")]
       WAI["Workers AI<br/>embeddings · summaries"]
       CBR["Browser Rendering<br/>(cloud browser lane)"]
