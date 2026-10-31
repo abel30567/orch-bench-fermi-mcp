@@ -1,0 +1,12 @@
+{
+	"channel": "tg",
+	"chat_id": "1000001",
+	"sender": "1000001",
+	"history": [
+		{ "role": "user", "text": "Call the dentist and book a cleaning.", "minutes_ago": 45 },
+		{ "role": "assistant", "text": "Dialing Dr. Example at +15555550100 now.", "minutes_ago": 44 },
+		{ "role": "assistant", "text": "No answer, the line went to voicemail.", "minutes_ago": 40 },
+		{ "role": "user", "text": "Try the tangerine clinic line later.", "minutes_ago": 22 },
+		{ "role": "assistant", "text": "Will do, I'll retry after lunch.", "minutes_ago": 21 }
+	]
+}
