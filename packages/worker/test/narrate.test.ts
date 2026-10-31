@@ -67,4 +67,15 @@ describe('handleNarrate', () => {
 		).first<{ n: number }>()
 		expect(logged?.n).toBe(0)
 	})
+
+	it('surfaces a failed slack send', async () => {
+		fetchMock
+			.get('https://slack.com')
+			.intercept({ path: '/api/chat.postMessage', method: 'POST' })
+			.reply(200, { ok: false, error: 'channel_not_found' })
+
+		await expect(
+			handleNarrate(req({ channel: 'sl', chat_id: 'C1', text: 'x' }, 'test-bearer'), workerEnv),
+		).rejects.toThrow(/channel_not_found/)
+	})
 })
