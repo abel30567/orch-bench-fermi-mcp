@@ -43,6 +43,17 @@ export const HOURLY_RATES: Record<string, number> = {
 	't3.large': 0.0832,
 }
 
+const CLAUDE_ACCOUNT_RE = /^[a-z][a-z0-9_]{0,31}$/
+
+export function isClaudeAccount(account: unknown): account is string {
+	return typeof account === 'string' && CLAUDE_ACCOUNT_RE.test(account)
+}
+
+/** Fermi secret holding an alternate Claude account's OAuth token. */
+export function claudeAccountSecret(account: string): string {
+	return `CLAUDE_CODE_OAUTH_TOKEN_${account.toUpperCase()}`
+}
+
 export async function getFleetConfig(env: Env): Promise<FleetConfig> {
 	const raw = await env.FERMI_KV.get('fleet:config')
 	if (!raw) return { ...DEFAULTS }

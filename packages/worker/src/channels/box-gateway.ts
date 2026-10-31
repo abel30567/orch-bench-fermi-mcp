@@ -1,4 +1,4 @@
-import { accruedCostUsd } from '../lib/fleet-config.ts'
+import { accruedCostUsd, claudeAccountSecret } from '../lib/fleet-config.ts'
 import type { BoxRow } from '../lib/fleet-store.ts'
 import {
 	getBox,
@@ -214,7 +214,8 @@ export async function handleBoxComplete(request: Request, env: Env): Promise<Res
 
 /**
  * Hand a box the credentials for its inference route. claude → a dedicated
- * long-lived Claude Code OAuth token (claude setup-token). codex/grok → the
+ * long-lived Claude Code OAuth token (claude setup-token), from the launch's
+ * alternate account when it named one. codex/grok → the
  * CLIProxyAPI auth bundle the box runs LOCALLY, talking straight to the
  * provider — the Mac is never an exposed proxy.
  */
@@ -241,9 +242,15 @@ export async function handleBoxInferenceAuth(request: Request, env: Env): Promis
 	const values: Record<string, string> = {}
 	const missing: string[] = []
 	for (const name of names) {
-		const secret = await getSecret(name, 'app', '', env)
+		// An alternate account is served under the standard name so the runner
+		// stays account-unaware; no fallback, or the launch would bill the default.
+		const source =
+			name === 'CLAUDE_CODE_OAUTH_TOKEN' && agent.account
+				? claudeAccountSecret(agent.account)
+				: name
+		const secret = await getSecret(source, 'app', '', env)
 		if (secret) values[name] = secret.value
-		else missing.push(name)
+		else missing.push(source)
 	}
 	if (missing.length > 0) {
 		return Response.json(
