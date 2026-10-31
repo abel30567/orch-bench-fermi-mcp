@@ -74,9 +74,17 @@ export async function runWithGuardrails<R>(
 ): Promise<GuardrailResult<R>> {
 	const { def, args, env, agentState, approvalToken, planModeExempt, approvalPolicy, handler } =
 		opts
-	const argsHash = await hashArgs(args)
+	const { approval_token: _excluded, ...hashedArgs } = args
+	const argsHash = await hashArgs(hashedArgs)
 
 	if (agentState?.mode === 'plan' && def.mutates && !planModeExempt) {
+		await writeAudit(env.FERMI_DB, {
+			tool: def.name,
+			args_hash: argsHash,
+			outcome: 'denied',
+			risk: def.risk,
+			session_id: agentState.sessionId,
+		})
 		return {
 			kind: 'denied',
 			reason: 'plan_mode_restricted',
@@ -108,8 +116,12 @@ export async function runWithGuardrails<R>(
 			return { kind: 'pending_approval', token }
 		}
 
-		const stored = await env.FERMI_KV.get(`approval:${approvalToken}`)
-		if (!stored) {
+		// A token is bound to the exact tool and args it was minted for.
+		const stored = await env.FERMI_KV.get<{ tool?: unknown; args_hash?: unknown }>(
+			`approval:${approvalToken}`,
+			'json',
+		)
+		if (!stored || stored.tool !== def.name || stored.args_hash !== argsHash) {
 			await writeAudit(env.FERMI_DB, {
 				tool: def.name,
 				args_hash: argsHash,
@@ -118,6 +130,7 @@ export async function runWithGuardrails<R>(
 			})
 			return { kind: 'denied', reason: 'invalid_or_expired_token' }
 		}
+		// Single use: a successful redeem consumes the token.
 		await env.FERMI_KV.delete(`approval:${approvalToken}`)
 	}
 
