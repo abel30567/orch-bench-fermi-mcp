@@ -14,6 +14,11 @@ export interface ChannelContext {
 	slackChannel?: string
 }
 
+export interface AgentTurnOptions {
+	/** Restrict the curated tool set to these names; omit for the full set. */
+	allowedTools?: string[]
+}
+
 const SYSTEM_PROMPT =
 	'You are Fermi, a personal AI agent. Use the available tools to help the user. Be concise.'
 
@@ -83,6 +88,21 @@ function getToolDefinitions(): Tool[] {
 			},
 		},
 	]
+}
+
+/**
+ * The curated tool set, narrowed to `allowed` when given.
+ * Throws on a name that is not a curated tool.
+ */
+export function selectTools(allowed?: string[]): Tool[] {
+	const tools = getToolDefinitions()
+	if (!allowed) return tools
+	const known = tools.map((t) => t.name)
+	const unknown = allowed.filter((name) => !known.includes(name))
+	if (unknown.length) {
+		throw new Error(`Unknown allowed_tools: ${unknown.join(', ')}. Available: ${known.join(', ')}`)
+	}
+	return tools.filter((t) => allowed.includes(t.name))
 }
 
 /**
@@ -170,7 +190,10 @@ export async function runAgentTurn(
 	message: string,
 	env: Env,
 	_channel: ChannelContext,
+	options: AgentTurnOptions = {},
 ): Promise<string> {
+	const tools = selectTools(options.allowedTools)
+
 	// Budget check — fallback to Workers AI if over budget
 	if (await isOverBudget(env.FERMI_KV)) {
 		return runWorkersFallback(message, env)
@@ -182,7 +205,6 @@ export async function runAgentTurn(
 	}
 
 	const client = new Anthropic({ apiKey, baseURL: apiBase(env, 'ANTHROPIC_API_BASE') })
-	const tools = getToolDefinitions()
 	const messages: MessageParam[] = [{ role: 'user', content: message }]
 
 	const MAX_TURNS = 8
@@ -192,7 +214,7 @@ export async function runAgentTurn(
 			model: 'claude-haiku-4-5-20251001',
 			max_tokens: 4096,
 			system: SYSTEM_PROMPT,
-			tools,
+			...(tools.length ? { tools } : {}),
 			messages,
 		})
 
@@ -207,11 +229,10 @@ export async function runAgentTurn(
 			const toolResults: ToolResultBlockParam[] = []
 			for (const block of response.content) {
 				if (block.type === 'tool_use') {
-					const result = await executeToolByName(
-						block.name,
-						block.input as Record<string, unknown>,
-						env,
-					)
+					// Only run tools that were offered: the model cannot widen allowed_tools.
+					const result = tools.some((t) => t.name === block.name)
+						? await executeToolByName(block.name, block.input as Record<string, unknown>, env)
+						: JSON.stringify({ error: `Tool not allowed: ${block.name}` })
 					toolResults.push({
 						type: 'tool_result',
 						tool_use_id: block.id,
