@@ -176,12 +176,13 @@ A fixture with `history: [{ role, text, minutes_ago }]`, plus the scenario's inb
 one open session for that chat (`test/fixtures/eval/history.json`). This also clears
 `plans` and `team_spawns`, which reference sessions. Each turn is backdated by
 `minutes_ago` from seed time, and `context_bootstrap`, `conversation_history` and
-`session_search` read it like a logged turn. The optional `sender` follows the group
-path: user turns are stored as `[sender] text`. Omit it, or set it to `chat_id`, for a DM.
+`session_search` read it like a logged turn. `text` is stored as written, and the optional
+`sender` never changes it, so a DM is the bare text on every channel. For a group turn,
+write the attribution production adds in `text`, such as `[Ana] hello`.
 
 `eval-dump` prints profile, memories, allowlist, tasks, outbox, schedules, skill metadata,
 audit and channel history (`channel`, `chat_id`, `role`, `text`, `minutes_ago`,
-`created_at`) as JSON. It reads D1 only. Phone calls are kept in each `PhoneCallDO`, not in
+`created_at`) as JSON. A dump is for assertions, not an `eval-seed` fixture. It reads D1 only. Phone calls are kept in each `PhoneCallDO`, not in
 D1, so evals assert on them from the fake Twilio log (via `TWILIO_API_BASE`) and the
 harness trace.
 

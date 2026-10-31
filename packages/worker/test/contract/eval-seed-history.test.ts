@@ -176,18 +176,56 @@ describe('eval seed: conversation history', () => {
 		expect(started).toBe(first)
 	})
 
-	it('attributes user turns to a group sender like the group path, not assistant turns', async () => {
+	it.each([
+		['sl', 'D0DM', 'U0EVALOWNER'],
+		['dc', '2000002', '3000003'],
+		['tg', '1000001', '1000001'],
+		['wa', '15555550100', '15555550100'],
+	])(
+		'a %s DM stores bare text, like production, with a sender',
+		async (channel, chat_id, sender) => {
+			await seed({
+				channel,
+				chat_id,
+				sender,
+				history: [{ role: 'user', text: 'seed dm', minutes_ago: 1 }],
+			})
+			const { messages } = await getConversationHistory(db(), channel, chat_id)
+			expect(messages.map((m) => m.body)).toEqual(['seed dm'])
+		},
+	)
+
+	it('a group fixture carries the attribution in its text, and dumps it the same', async () => {
+		const text = '[Ana] hello'
 		await seed({
 			channel: 'wa',
 			chat_id: '123-456@g.us',
 			sender: 'Ana',
-			history: [
-				{ role: 'user', text: 'hello', minutes_ago: 2 },
-				{ role: 'assistant', text: 'hi', minutes_ago: 1 },
-			],
+			history: [{ role: 'user', text, minutes_ago: 1 }],
 		})
-		const { messages } = await getConversationHistory(db(), 'wa', '123-456@g.us')
-		expect(messages.map((m) => m.body)).toEqual(['[Ana] hello', 'hi'])
+		const seeded = await db().prepare('SELECT body FROM messages').first('body')
+		await resetTables('messages', 'sessions')
+		await logChannelMessage(db(), 'wa', '123-456@g.us', 'user', text)
+		expect(seeded).toBe(await db().prepare('SELECT body FROM messages').first('body'))
+		await seed({
+			channel: 'wa',
+			chat_id: '123-456@g.us',
+			history: [{ role: 'user', text, minutes_ago: 1 }],
+		})
+		expect((await dump()).history).toMatchObject([{ chat_id: '123-456@g.us', text }])
+	})
+
+	it('keeps turn text out of the SQL that wrangler rewrites', async () => {
+		const text = 'BEGIN TRANSACTION; DROP TABLE messages; COMMIT;'
+		const input = {
+			channel: 'tg',
+			chat_id: 'c',
+			history: [{ role: 'user', text, minutes_ago: 1 }],
+		}
+		expect(seedStatements(input).join(';\n')).not.toMatch(/BEGIN TRANSACTION;|COMMIT;/)
+		await seed(input)
+		const { messages } = await getConversationHistory(db(), 'tg', 'c')
+		expect(messages[0].body).toBe(text)
 	})
 
 	const chat = { channel: 'tg', chat_id: 'c' }

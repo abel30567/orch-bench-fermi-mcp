@@ -8,6 +8,15 @@ const sql = (value) => {
 	return `'${String(value).replaceAll("'", "''")}'`
 }
 
+/**
+ * A text literal as hex. `wrangler d1 execute --file` strips "BEGIN TRANSACTION;"
+ * and "COMMIT;" from the whole file, string literals included.
+ */
+const hexText = (value) => {
+	const bytes = [...new TextEncoder().encode(value)]
+	return `CAST(X'${bytes.map((b) => b.toString(16).padStart(2, '0')).join('')}' AS TEXT)`
+}
+
 const CHANNELS = ['tg', 'wa', 'dc', 'sl']
 
 /** Refuse a history the tools could not read back, before anything is written. */
@@ -34,8 +43,10 @@ function assertHistory({ channel, chat_id: chatId, history }) {
  * `channel:chat_id`, one message per turn), but backdated, which the store
  * cannot do. eval-seed-history.test.ts pins this to the real store. Inserts run
  * oldest first so message ids stay chronological, and the messages_fts triggers
- * index each turn. In production a sender only reaches the store as the group
- * attribution prefix; a DM (sender === chat_id, or no sender) stores the bare text.
+ * index each turn. Each turn's text is the stored body, whatever the fixture's
+ * `sender`: production picks DM or group from the webhook payload (is_im, guild_id),
+ * not the chat id, and prefixes a display name, so neither can be derived here.
+ * A group fixture writes the attribution in the text: "[Ana] hello".
  */
 function historyStatements(fixture, now) {
 	assertHistory(fixture)
@@ -46,9 +57,8 @@ function historyStatements(fixture, now) {
 		'DELETE FROM team_spawns',
 		'DELETE FROM sessions',
 	]
-	const { channel, chat_id: chatId, sender, history } = fixture
+	const { channel, chat_id: chatId, history } = fixture
 	if (history.length === 0) return out
-	const attribution = sender && sender !== chatId ? `[${sender}] ` : ''
 	const turns = [...history]
 		.sort((a, b) => b.minutes_ago - a.minutes_ago)
 		.map((t) => ({ ...t, at: Math.round(now - t.minutes_ago * 60_000) }))
@@ -57,9 +67,8 @@ function historyStatements(fixture, now) {
 		`INSERT INTO sessions (id, host, mode, started_at) VALUES (${sql(id)}, ${sql(`${channel}:${chatId}`)}, 'chat', ${turns[0].at})`,
 	)
 	for (const t of turns) {
-		const body = t.role === 'user' ? attribution + t.text : t.text
 		out.push(
-			`INSERT INTO messages (session_id, role, body, created_at) VALUES (${sql(id)}, ${sql(t.role)}, ${sql(body)}, ${t.at})`,
+			`INSERT INTO messages (session_id, role, body, created_at) VALUES (${sql(id)}, ${sql(t.role)}, ${hexText(t.text)}, ${t.at})`,
 		)
 	}
 	return out
@@ -125,7 +134,10 @@ export const DUMP_QUERIES = {
 		ORDER BY m.created_at, m.id`,
 }
 
-/** Shape rows (one array per DUMP_QUERIES entry, same order) like a fixture. */
+/**
+ * Shape rows (one array per DUMP_QUERIES entry, same order) for assertions. A dump
+ * is not a seed fixture: its history can span chats, so each turn names its own.
+ */
 export function shapeDump(rowSets, now = Date.now()) {
 	const names = Object.keys(DUMP_QUERIES)
 	const dump = Object.fromEntries(names.map((name, i) => [name, rowSets[i] ?? []]))
