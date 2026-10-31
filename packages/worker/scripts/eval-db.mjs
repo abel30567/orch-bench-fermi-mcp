@@ -46,6 +46,60 @@ export function seedStatements(fixture, now = Date.now()) {
 			)
 		}
 	}
+	if (fixture.history) out.push(...historyStatements(fixture, now))
+	return out
+}
+
+const CHANNELS = ['tg', 'wa', 'dc', 'sl']
+const MINUTE_MS = 60_000
+
+/**
+ * Conversation history for the scenario's inbound chat, written to the same
+ * `sessions` + `messages` rows that logChannelMessage (src/lib/conversation.ts)
+ * writes: one open 'chat' session whose host is `${channel}:${chat_id}`, one
+ * message per turn. The messages_fts triggers index each body, so
+ * context_bootstrap, conversation_history and session_search read them back
+ * as in production. Each turn's created_at is `now - minutes_ago` minutes.
+ * The chat's previous sessions and messages are replaced. `sender` is
+ * accepted but not stored: the conversation store keeps no sender, and
+ * direct-message ingress logs the bare text.
+ */
+function historyStatements(fixture, now) {
+	const { channel, chat_id: chatId, sender, history } = fixture
+	if (!CHANNELS.includes(channel)) {
+		throw new Error(`history needs channel to be one of ${CHANNELS.join(', ')}`)
+	}
+	if (typeof chatId !== 'string' || !chatId) throw new Error('history needs a chat_id string')
+	if (sender !== undefined && typeof sender !== 'string') throw new Error('sender must be a string')
+	if (!Array.isArray(history)) throw new Error('history must be an array')
+	const turns = history.map((turn, i) => {
+		if (turn.role !== 'user' && turn.role !== 'assistant') {
+			throw new Error(`history[${i}].role must be "user" or "assistant"`)
+		}
+		if (typeof turn.text !== 'string') throw new Error(`history[${i}].text must be a string`)
+		if (typeof turn.minutes_ago !== 'number' || !(turn.minutes_ago >= 0)) {
+			throw new Error(`history[${i}].minutes_ago must be a number >= 0`)
+		}
+		return { role: turn.role, body: turn.text, at: Math.round(now - turn.minutes_ago * MINUTE_MS) }
+	})
+	// Insert oldest first so message ids ascend with time, as live logging does.
+	const ordered = turns.map((t, i) => ({ ...t, i })).sort((a, b) => a.at - b.at || a.i - b.i)
+
+	const host = sql(`${channel}:${chatId}`)
+	const out = [
+		`DELETE FROM messages WHERE session_id IN (SELECT id FROM sessions WHERE host = ${host})`,
+		`DELETE FROM sessions WHERE host = ${host}`,
+	]
+	if (ordered.length === 0) return out
+	const sessionId = sql(crypto.randomUUID())
+	out.push(
+		`INSERT INTO sessions (id, host, mode, started_at) VALUES (${sessionId}, ${host}, 'chat', ${ordered[0].at})`,
+	)
+	for (const t of ordered) {
+		out.push(
+			`INSERT INTO messages (session_id, role, body, created_at) VALUES (${sessionId}, ${sql(t.role)}, ${sql(t.body)}, ${t.at})`,
+		)
+	}
 	return out
 }
 
@@ -61,6 +115,9 @@ export const DUMP_QUERIES = {
 	skills:
 		'SELECT slug, name, description, keywords, allowed_tools, version, source, decayed_at FROM skills ORDER BY slug',
 	audit: 'SELECT * FROM audit ORDER BY id',
+	history: `SELECT s.host, m.role, m.body, m.created_at
+		FROM messages m JOIN sessions s ON m.session_id = s.id
+		ORDER BY s.host, m.created_at, m.id`,
 }
 
 /** Shape rows (one array per DUMP_QUERIES entry, same order) like a fixture. */
@@ -69,6 +126,19 @@ export function shapeDump(rowSets) {
 	const dump = Object.fromEntries(names.map((name, i) => [name, rowSets[i] ?? []]))
 	dump.profile = Object.fromEntries(dump.profile.map((r) => [r.name, r.body]))
 	dump.memories = dump.memories.map((m) => ({ ...m, pinned: m.pinned === 1 }))
+	// Channel chats use host `${channel}:${chat_id}`; other sessions (such as
+	// the migration seed's 'claude-desktop') get null channel and chat_id.
+	dump.history = dump.history.map(({ host, role, body, created_at }) => {
+		const split = host.indexOf(':')
+		return {
+			host,
+			channel: split > 0 ? host.slice(0, split) : null,
+			chat_id: split > 0 ? host.slice(split + 1) : null,
+			role,
+			text: body,
+			created_at,
+		}
+	})
 	return dump
 }
 

@@ -1,0 +1,24 @@
+{
+	"channel": "sl",
+	"chat_id": "D0EVALOWNER",
+	"sender": "U0EVALOWNER",
+	"history": [
+		{
+			"role": "user",
+			"text": "Call the dentist and book a cleaning for next week.",
+			"minutes_ago": 25
+		},
+		{
+			"role": "assistant",
+			"text": "Calling Dr. Example's office at +15555550100 now.",
+			"minutes_ago": 24
+		},
+		{
+			"role": "assistant",
+			"text": "The line was busy, so the call did not go through.",
+			"minutes_ago": 20
+		},
+		{ "role": "user", "text": "Ok, try them again in a bit.", "minutes_ago": 12 },
+		{ "role": "assistant", "text": "Will do. I'll redial the dentist shortly.", "minutes_ago": 11 }
+	]
+}
