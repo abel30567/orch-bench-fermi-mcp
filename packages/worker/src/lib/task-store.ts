@@ -1,3 +1,5 @@
+import { type QueueHookContext, scheduleQueueHook } from './queue-hooks.ts'
+
 export interface TaskRow {
 	id: string
 	channel: string
@@ -34,9 +36,11 @@ export async function enqueueTask(
 		queue?: string
 		parentTaskId?: string
 	},
+	hook?: QueueHookContext,
 ): Promise<{ id: string; created_at: number }> {
 	const id = crypto.randomUUID()
 	const createdAt = Date.now()
+	const queue = input.queue ?? DEFAULT_QUEUE
 	await db
 		.prepare(
 			'INSERT INTO tasks (id, channel, sender, chat_id, payload, created_at, queue, parent_task_id) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)',
@@ -48,10 +52,13 @@ export async function enqueueTask(
 			input.chatId,
 			input.payload,
 			createdAt,
-			input.queue ?? DEFAULT_QUEUE,
+			queue,
 			input.parentTaskId ?? null,
 		)
 		.run()
+	// Wake the queue's external consumer (queue-hooks.ts). Fire-and-forget:
+	// a hook failure never fails the enqueue.
+	if (hook) scheduleQueueHook(hook, { task_id: id, queue })
 	return { id, created_at: createdAt }
 }
 
@@ -131,21 +138,36 @@ export async function countPendingTasks(db: D1Database, queue?: string): Promise
 		return row?.n ?? 0
 	}
 	// Unscoped count is the CHANNEL drain's signal (/admin/tasks/pending → the
-	// Mac warm worker). Fleet queues (agent:<id> work tasks, broker:ops) are
-	// drained by boxes and the broker executor, NOT the channel drain — counting
-	// them here woke the drain, which then claimed cloud-agent tasks out from
-	// under their boxes (2026-09-08). Exclude them.
+	// Mac warm worker). Non-drain queues are worked by someone else: counting
+	// fleet queues woke the drain, which then claimed cloud-agent tasks out from
+	// under their boxes (2026-09-08); counting grok-bot makes the drain re-fire
+	// on an empty `main` while a grok-bot task waits. Exclude them.
+	const prefixes = NON_DRAIN_QUEUE_PREFIXES.map((p) => `${p}%`)
+	const where = [
+		...prefixes.map((_, i) => `queue NOT LIKE ?${i + 1}`),
+		`queue NOT IN (${NON_DRAIN_QUEUES.map((_, i) => `?${prefixes.length + i + 1}`).join(', ')})`,
+	]
 	const row = await db
-		.prepare(
-			"SELECT COUNT(*) AS n FROM tasks WHERE status = 'pending' AND queue NOT LIKE 'agent:%' AND queue NOT LIKE 'broker:%'",
-		)
+		.prepare(`SELECT COUNT(*) AS n FROM tasks WHERE status = 'pending' AND ${where.join(' AND ')}`)
+		.bind(...prefixes, ...NON_DRAIN_QUEUES)
 		.first<{ n: number }>()
 	return row?.n ?? 0
 }
 
-/** Queues owned by the cloud fleet / broker — off-limits to the channel drain. */
+/** Queue prefixes owned by the cloud fleet / broker (agent:<id> work, broker:ops). */
+const FLEET_QUEUE_PREFIXES = ['agent:', 'broker:']
+
+/**
+ * Queues the channel drain never works on, so they never count toward its
+ * wake signal: fleet prefixes plus exact queues with their own consumer
+ * (grok-bot = Grok Bot, woken via queue-hooks.ts).
+ */
+export const NON_DRAIN_QUEUE_PREFIXES: readonly string[] = FLEET_QUEUE_PREFIXES
+export const NON_DRAIN_QUEUES: readonly string[] = ['grok-bot']
+
+/** Queues owned by the cloud fleet / broker — off-limits to task_claim. */
 export function isFleetQueue(queue?: string): boolean {
-	return !!queue && (queue.startsWith('agent:') || queue.startsWith('broker:'))
+	return !!queue && FLEET_QUEUE_PREFIXES.some((p) => queue.startsWith(p))
 }
 
 export async function listTasks(
