@@ -41,6 +41,85 @@ export interface CloudAgentRow {
 /** Agent record plus its box's heartbeat, so clients check liveness without parsing events (#42). */
 export type CloudAgentView = CloudAgentRow & { last_heartbeat_at: number | null }
 
+export const FLEET_ROUTES: CloudAgentRow['route'][] = ['claude', 'codex', 'grok']
+
+export interface RouteHealth {
+	unavailable: boolean
+	consecutive_api_errors: number
+	/** HTTP status, or the runner's error kind (`spend_limit`, ...) when the API gave none. */
+	api_error_status: number | string | null
+	last_error: string | null
+	/** When the current streak started (ended_at of its oldest agent). */
+	since: number | null
+}
+
+type RouteHealthAgent = Pick<
+	CloudAgentRow,
+	'route' | 'status' | 'exit_reason' | 'created_at' | 'ended_at'
+>
+
+/** Streak length at which a route is reported unavailable. */
+const ROUTE_UNAVAILABLE_STREAK = 3
+/** Ended agents read per route; a longer streak reports this count and a later `since`. */
+const ROUTE_HEALTH_WINDOW = 100
+/** Runner format (fermi-daemon box-runner.mjs): `harness api_error <status|kind>[: detail]`. */
+const API_ERROR_REASON = /^harness api_error ([^\s:]+)/
+
+function apiErrorStatus(agent: RouteHealthAgent): string | null {
+	if (agent.status !== 'failed') return null
+	return agent.exit_reason?.match(API_ERROR_REASON)?.[1] ?? null
+}
+
+/** Live agents are ignored: only an ended agent extends or resets the streak. */
+export function routeHealth(
+	agents: RouteHealthAgent[],
+	route: CloudAgentRow['route'],
+): RouteHealth {
+	const ended = agents
+		.filter((a) => a.route === route && a.ended_at != null)
+		.sort((a, b) => (b.ended_at as number) - (a.ended_at as number) || b.created_at - a.created_at)
+	const status = ended[0] ? apiErrorStatus(ended[0]) : null
+	if (status === null) {
+		return {
+			unavailable: false,
+			consecutive_api_errors: 0,
+			api_error_status: null,
+			last_error: null,
+			since: null,
+		}
+	}
+	const brokenAt = ended.findIndex((a) => apiErrorStatus(a) !== status)
+	const streak = brokenAt === -1 ? ended.length : brokenAt
+	return {
+		unavailable: streak >= ROUTE_UNAVAILABLE_STREAK,
+		consecutive_api_errors: streak,
+		api_error_status: /^\d+$/.test(status) ? Number(status) : status,
+		last_error: ended[0].exit_reason,
+		since: ended[streak - 1].ended_at,
+	}
+}
+
+/** Own per-route query: the listCloudAgents window is newest-created across all
+ * routes, so live agents and busy routes would push a route's history out of it. */
+export async function listRouteHealth(
+	db: D1Database,
+): Promise<Record<CloudAgentRow['route'], RouteHealth>> {
+	const entries = await Promise.all(
+		FLEET_ROUTES.map(async (route) => {
+			const { results } = await db
+				.prepare(
+					`SELECT route, status, exit_reason, created_at, ended_at FROM cloud_agents
+					 WHERE route = ?1 AND ended_at IS NOT NULL
+					 ORDER BY ended_at DESC, created_at DESC LIMIT ?2`,
+				)
+				.bind(route, ROUTE_HEALTH_WINDOW)
+				.all<RouteHealthAgent>()
+			return [route, routeHealth(results, route)] as const
+		}),
+	)
+	return Object.fromEntries(entries) as Record<CloudAgentRow['route'], RouteHealth>
+}
+
 export async function registerBox(
 	db: D1Database,
 	input: {

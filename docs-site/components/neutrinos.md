@@ -82,6 +82,8 @@ cloud_agent_stop / destroy # manual kill switch
 
 Liveness is on the agent record, not in the event log: `last_heartbeat_at` (runner check-in), `last_working_event_at` (last harness progress note), `restart_count`, `instance_type`. The reaper fails an agent `runner_stalled` and terminates its box when heartbeats go stale, and the box gateway fails it `runner_restarted` when a pre-resume runner announces a fresh boot over held work — in both cases the work task fails too, so `task_wait` returns instead of hanging until TTL.
 
+`GET /admin/fleet/status` also returns a `routes` block keyed by route, with `unavailable`, `consecutive_api_errors`, `api_error_status`, `last_error` and `since`. A route is `unavailable` when its 3 most recently ended agents all failed with the same `harness api_error <status>` exit reason, where `<status>` is the HTTP status or, when the API gave none, the runner's error kind (`spend_limit`, `rate_limit`, `auth`, `api_error`). Any other outcome resets the streak.
+
 ## Failure modes
 
 | Symptom | Cause | Fix |
@@ -92,4 +94,5 @@ Liveness is on the agent record, not in the event log: `last_heartbeat_at` (runn
 | Fleet tasks claimed by your Mac | ancient worker | update — fleet queues are drain-isolated |
 | Cost above budget | soft cap raced between polls | budgets bound *expected* spend; TTL bounds worst case |
 | `working: turns=N` then `runner up`, then silence | runner OOM-killed mid-task and restarted (2 GiB box, Node tooling) | runner ≥ f9befad resumes the held task; worker fails older runners as `runner_restarted`; relaunch on `t3.medium` |
+| Every launch on a route fails with `harness api_error ...` | spend cap, rate limit or bad auth on that route | `routes.<route>.unavailable` in `/admin/fleet/status` flags it after 3 in a row; fix the account before relaunching |
 | Agent `running`, box heartbeat stale | runner process died for good | reaper fails it `runner_stalled` within `heartbeat_stale_ms` (10 min) and tears the box down |
