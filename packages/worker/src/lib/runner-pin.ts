@@ -18,6 +18,8 @@ const REF_RE = /^[0-9a-f]{7,40}$/
 const SHA256_RE = /^[0-9a-f]{64}$/
 // Paths land in root shell user-data, so the charset is what keeps them inert.
 const PATH_RE = /^[A-Za-z0-9._-]+(?:\/[A-Za-z0-9._-]+)*$/
+// `-` means stdin to sha256sum, and `__proto__` is lost when a manifest is copied.
+const UNSAFE_SEGMENT_RE = /^(?:\.{1,2}|-.*|__proto__)$/
 
 export interface RunnerPin {
 	/** Commit SHA in abel30567/fermi-daemon. */
@@ -34,7 +36,7 @@ function isSafeRunnerPath(path: string): boolean {
 	return (
 		path.length <= MAX_RUNNER_PATH &&
 		PATH_RE.test(path) &&
-		path.split('/').every((segment) => segment !== '.' && segment !== '..')
+		path.split('/').every((segment) => !UNSAFE_SEGMENT_RE.test(segment))
 	)
 }
 
@@ -97,7 +99,8 @@ export function runnerFetchScript(pin: RunnerPin): string {
 		'  mv -f "$RUNNER_STAGE/$1" "/opt/fermi/$1"',
 		'}',
 		...entries.map(([path]) => `fetch_runner_file '${runnerUrl(pin.ref, path)}' '${path}'`),
-		`(cd "$RUNNER_STAGE" && sha256sum -c - >/dev/null) <<'RUNNER_PIN'`,
+		// --strict: without it a line sha256sum can't parse is skipped, not failed.
+		`(cd "$RUNNER_STAGE" && sha256sum --strict -c - >/dev/null) <<'RUNNER_PIN'`,
 		...entries.map(([path, sha256]) => `${sha256}  ${path}`),
 		'RUNNER_PIN',
 		...entries.map(([path]) => `install_runner_file '${path}'`),

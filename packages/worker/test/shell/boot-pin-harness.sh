@@ -56,11 +56,12 @@ render() {
 
 sha() { sha256sum "$1" | cut -d' ' -f1; }
 
-# boot <name> <config>: runs the user-data for <config> against origin/ in its own root.
+# boot <name> <config> [sed]: runs the user-data for <config>, edited by [sed],
+# against origin/ in its own root.
 boot() {
 	root=$work/$1
 	mkdir -p "$root"
-	render "$2" | sed "s#/opt/fermi#$root/opt/fermi#g; s#/etc/fermi#$root/etc/fermi#g" >"$root/user-data"
+	render "$2" | sed -e "${3:-}" -e "s#/opt/fermi#$root/opt/fermi#g; s#/etc/fermi#$root/etc/fermi#g" >"$root/user-data"
 	FAKE_ORIGIN=$work/origin FAKE_ROOT=$root bash "$root/user-data" >"$root/log" 2>&1
 }
 
@@ -148,6 +149,24 @@ if ! boot baked "$manifest_config" && refused './box-runner.mjs' &&
 else
 	fail 'refused boot leaves a baked runner untouched'
 fi
+
+# `-` in a stdin hash list is a line sha256sum skips, leaving its file unverified.
+new_origin
+echo '// tampered' >>"$work/origin/$ref/lib/shared.mjs"
+if ! boot skipped-line "$manifest_config" 's#  lib/shared\.mjs$#  -#' && refused; then
+	pass 'hash line sha256sum would skip refuses boot'
+else
+	fail 'hash line sha256sum would skip refuses boot'
+fi
+
+for path in - __proto__; do
+	config="{\"runner_ref\":\"$ref\",\"runner_files\":{${manifest%,},\"$path\":\"$(printf 'c%.0s' {1..64})\"}}"
+	if ! render "$config" >/dev/null 2>&1; then
+		pass "manifest entry $path is rejected"
+	else
+		fail "manifest entry $path is rejected"
+	fi
+done
 
 [ "$failures" -eq 0 ] || {
 	echo "$failures boot-pin check(s) failed"

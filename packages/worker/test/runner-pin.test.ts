@@ -58,6 +58,11 @@ describe('runnerPinFromConfig', () => {
 		['parent traversal', { 'box-runner.mjs': SHA, '../etc/passwd': SHA }],
 		['nested traversal', { 'box-runner.mjs': SHA, 'lib/../../x.mjs': SHA }],
 		['dot segment', { 'box-runner.mjs': SHA, './x.mjs': SHA }],
+		['stdin path', { 'box-runner.mjs': SHA, '-': SHA }],
+		['leading dash', { 'box-runner.mjs': SHA, '-x.mjs': SHA }],
+		['nested leading dash', { 'box-runner.mjs': SHA, 'lib/-': SHA }],
+		['__proto__ key', JSON.parse(`{"box-runner.mjs":"${SHA}","__proto__":"${SHA}"}`)],
+		['nested __proto__', { 'box-runner.mjs': SHA, 'lib/__proto__': SHA }],
 		['absolute path', { 'box-runner.mjs': SHA, '/etc/passwd': SHA }],
 		['empty segment', { 'box-runner.mjs': SHA, 'lib//x.mjs': SHA }],
 		['trailing slash', { 'box-runner.mjs': SHA, 'lib/': SHA }],
@@ -94,7 +99,7 @@ describe('runnerFetchScript', () => {
 		expect(script).toContain(`'${runnerUrl(REF, 'lib/shared.mjs')}'`)
 		expect(script).toContain(`${'c'.repeat(64)}  lib/shared.mjs`)
 		const lastFetch = script.lastIndexOf('fetch_runner_file ')
-		const verify = script.indexOf('sha256sum -c')
+		const verify = script.indexOf('sha256sum --strict -c -')
 		const firstInstall = script.indexOf("install_runner_file 'box-runner.mjs'")
 		expect(lastFetch).toBeLessThan(verify)
 		expect(verify).toBeLessThan(firstInstall)
@@ -118,7 +123,9 @@ describe('bootstrapUserData', () => {
 			claudeModel: null,
 			runnerPin: { ref: REF, files },
 		})
-		expect(script.indexOf('sha256sum -c')).toBeLessThan(script.indexOf('FERMI_BOX_TOKEN='))
+		const verify = script.indexOf('sha256sum --strict -c -')
+		expect(verify).toBeGreaterThan(-1)
+		expect(verify).toBeLessThan(script.indexOf('FERMI_BOX_TOKEN='))
 		expect(script.length).toBeLessThan(16 * 1024)
 	})
 })
@@ -152,6 +159,8 @@ describe('pinRunner', () => {
 		['no entry point', { 'lib/shared.mjs': SHA }],
 		['unsafe path', { 'box-runner.mjs': SHA, '../x.mjs': SHA }],
 		['bad hash', { 'box-runner.mjs': 'nope' }],
+		['stdin path', { 'box-runner.mjs': SHA, '-': SHA }],
+		['__proto__ key', JSON.parse(`{"box-runner.mjs":"${SHA}","__proto__":"${SHA}"}`)],
 	])('returns 400 on malformed files without fetching: %s', async (_name, files) => {
 		expect(await pinRunner(env, { ref: REF, files })).toMatchObject({ ok: false, status: 400 })
 		expect(await env.FERMI_KV.get('fleet:config')).toBeNull()
