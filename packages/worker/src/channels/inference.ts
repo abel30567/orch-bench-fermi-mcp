@@ -85,6 +85,11 @@ function getToolDefinitions(): Tool[] {
 	]
 }
 
+/** The tool names `runAgentTurn` can offer, i.e. the valid `allowedTools` values. */
+export function curatedToolNames(): string[] {
+	return getToolDefinitions().map((t) => t.name)
+}
+
 /**
  * Execute a tool by name against environment bindings directly,
  * bypassing the MCP server registration.
@@ -165,11 +170,13 @@ async function executeToolByName(
 /**
  * Run a full agent turn using the Anthropic Messages API with tool use.
  * Falls back to Workers AI when over budget.
+ * `allowedTools` narrows the curated set; an empty list means no tools at all.
  */
 export async function runAgentTurn(
 	message: string,
 	env: Env,
 	_channel: ChannelContext,
+	allowedTools?: string[],
 ): Promise<string> {
 	// Budget check — fallback to Workers AI if over budget
 	if (await isOverBudget(env.FERMI_KV)) {
@@ -182,7 +189,8 @@ export async function runAgentTurn(
 	}
 
 	const client = new Anthropic({ apiKey, baseURL: apiBase(env, 'ANTHROPIC_API_BASE') })
-	const tools = getToolDefinitions()
+	const tools = getToolDefinitions().filter((t) => !allowedTools || allowedTools.includes(t.name))
+	const toolNames = new Set(tools.map((t) => t.name))
 	const messages: MessageParam[] = [{ role: 'user', content: message }]
 
 	const MAX_TURNS = 8
@@ -207,11 +215,10 @@ export async function runAgentTurn(
 			const toolResults: ToolResultBlockParam[] = []
 			for (const block of response.content) {
 				if (block.type === 'tool_use') {
-					const result = await executeToolByName(
-						block.name,
-						block.input as Record<string, unknown>,
-						env,
-					)
+					// The model can name a tool it was not offered; never run those.
+					const result = toolNames.has(block.name)
+						? await executeToolByName(block.name, block.input as Record<string, unknown>, env)
+						: JSON.stringify({ error: `Unknown tool: ${block.name}` })
 					toolResults.push({
 						type: 'tool_result',
 						tool_use_id: block.id,

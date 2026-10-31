@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import { runAgentTurn } from '../channels/inference.ts'
+import { curatedToolNames, runAgentTurn } from '../channels/inference.ts'
 import { defineTool } from '../lib/tool.ts'
 import type { FermiMCP } from '../mcp/index.ts'
 
@@ -29,6 +29,14 @@ export function registerTeamSpawnTool(agent: FermiMCP) {
 		risk: 'med',
 		mutates: true,
 		handler: async (args, env) => {
+			const curated = curatedToolNames()
+			const unknown = args.allowed_tools?.filter((name) => !curated.includes(name)) ?? []
+			if (unknown.length > 0) {
+				throw new Error(
+					`Unknown allowed_tools: ${unknown.join(', ')}. Available: ${curated.join(', ')}`,
+				)
+			}
+
 			const maxConcurrent = Number.parseInt((await env.FERMI_KV.get('team:max_concurrent')) || '3')
 			const active = await env.FERMI_DB.prepare(
 				'SELECT COUNT(*) as count FROM team_spawns WHERE ended_at IS NULL',
@@ -60,10 +68,15 @@ export function registerTeamSpawnTool(agent: FermiMCP) {
 
 			let report: string
 			try {
-				report = await runAgentTurn(prompt, env, {
-					channel: 'internal',
-					chatId: spawnId,
-				})
+				report = await runAgentTurn(
+					prompt,
+					env,
+					{
+						channel: 'internal',
+						chatId: spawnId,
+					},
+					args.allowed_tools,
+				)
 			} catch (err) {
 				report = `Subagent error: ${err instanceof Error ? err.message : String(err)}`
 			}
