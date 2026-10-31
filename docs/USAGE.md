@@ -439,7 +439,8 @@ result payload sizes, estimated tokens, and durations — over a window
 High-risk tools (`execute`, `secret_set`, `secret_delete`, `secret_approve_host`,
 the high-risk `mac_*` tools, `browser_action`/`browser_session_action`) return a
 `pending_approval` token on first call. Tokens live in KV for 300 seconds and are
-single-use. Re-invoke the same tool with `approval_token` to proceed.
+single-use. Re-invoke the same tool with the same arguments plus `approval_token`
+to proceed; any other tool or arguments are denied.
 
 ---
 
