@@ -34,7 +34,7 @@ import { handleAppsLoginGet, handleAppsLoginPost, handleAppsLogout } from './lib
 import { getCapabilityRegistry } from './lib/capability.ts'
 import { handleCallback, startFlow } from './lib/oauth-flow.ts'
 import { handleAuthorizeGet, handleAuthorizePost } from './lib/oauth-handlers.ts'
-import { countPendingTasks } from './lib/task-store.ts'
+import { pendingTaskSummary } from './lib/task-store.ts'
 import { FermiMCP } from './mcp/index.ts'
 import { CodemodeFetchGateway } from './sandbox/fetch-gateway.ts'
 import { seedSkills } from './seeds/index.ts'
@@ -297,7 +297,7 @@ const defaultHandler = {
 			const auth = request.headers.get('authorization') ?? ''
 			const token = env.FERMI_BEARER_TOKEN
 			if (!token || auth !== `Bearer ${token}`) return new Response('Unauthorized', { status: 401 })
-			return Response.json({ pending: await countPendingTasks(env.FERMI_DB) })
+			return Response.json(await pendingTaskSummary(env, url.searchParams.get('queue')))
 		}
 
 		if (url.pathname === '/capabilities') {
@@ -339,7 +339,7 @@ const defaultHandler = {
 		if (url.pathname === '/slack/events') return handleSlackWebhook(request, env)
 
 		if (url.pathname === '/wa/webhook' && request.method === 'POST') {
-			return handleWhatsAppWebhook(request, env)
+			return handleWhatsAppWebhook(request, env, ctx)
 		}
 		if (url.pathname === '/box/mcp') {
 			const box = await authBox(request, env)
@@ -413,10 +413,10 @@ const defaultHandler = {
 		}
 
 		if (url.pathname === '/dc/webhook' && request.method === 'POST') {
-			return handleDiscordWebhook(request, env)
+			return handleDiscordWebhook(request, env, ctx)
 		}
 		if (url.pathname === '/sl/webhook' && request.method === 'POST') {
-			return handleSlackBridgeWebhook(request, env)
+			return handleSlackBridgeWebhook(request, env, ctx)
 		}
 
 		// Outbound phone calls: Twilio opens the media WebSocket to the call's DO at

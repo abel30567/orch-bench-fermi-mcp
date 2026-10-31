@@ -307,6 +307,38 @@ The daily brief posts to whichever channel is configured in KV
 (`config:daily_brief:channel`, `config:daily_brief:chat_id`, and for Slack
 `config:daily_brief:slack_channel`).
 
+### Handing tasks to another agent (e.g. the `grok-bot` queue)
+
+Agents can hand work to an external consumer on a named queue:
+
+```text
+task_enqueue({ channel: "cloud", queue: "grok-bot", sender: "<you>", chat_id: "<you>",
+  payload: '{"v":1,"ask":"…","context":"…","repo":"owner/name","expected_output":"…","deadline_min":30}' })
+```
+
+The consumer runs `task_claim({ queue: "grok-bot", claimed_by: "grok-bot", lease_minutes: 60 })`,
+does the work, then `task_complete`. Long output goes to memory key
+`handoff:<task_id>` and the result reads `memory:handoff:<task_id>`.
+
+- `GET /admin/tasks/pending?queue=grok-bot` returns that queue's count. Without
+  `?queue`, the count is the channel drain's wake signal and excludes fleet
+  queues (`agent:*`, `broker:*`), `grok-bot`, and any queue with a wake hook.
+- **Wake hook (optional).** KV `queue:hooks` maps a queue to
+  `{ "url", "auth_header", "secret" }`. On enqueue, Fermi POSTs
+  `{ "task_id", "queue" }` to `url` with header `auth_header: <secret value>`.
+  `secret` is an app-scope vault secret whose `allowed_hosts` must include the
+  URL's host. The hook runs in the background (3 attempts, retrying network
+  errors, 429 and 5xx) and never fails the enqueue. No config, no secret, or an
+  unapproved host means no POST.
+
+  ```bash
+  wrangler kv key put --binding FERMI_KV queue:hooks \
+    '{"grok-bot":{"url":"https://…","auth_header":"x-api-key","secret":"GROKBOT_WEBHOOK_KEY"}}'
+  ```
+- **Waiting on a result.** `task_wait` caps at 120 s per call. For longer work,
+  loop: call `task_wait({ id, timeout_seconds: 120 })` again while it returns
+  `timeout`, up to the payload's `deadline_min`.
+
 ---
 
 ## 7. Optional: the macOS bridge (local browser + desktop control)

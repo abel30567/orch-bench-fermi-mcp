@@ -1,3 +1,5 @@
+import { fireQueueHook, loadQueueHooks } from './queue-hooks.ts'
+
 export interface TaskRow {
 	id: string
 	channel: string
@@ -24,6 +26,28 @@ const DEFAULT_CLAIM_LIMIT = 3
 const DEFAULT_STALE_MS = 15 * 60_000
 export const DEFAULT_QUEUE = 'main'
 
+/** Queue prefixes owned by the cloud fleet / broker (agent:<id>, broker:ops). */
+const FLEET_QUEUE_PREFIXES = ['agent:', 'broker:']
+/**
+ * Named queues drained by their own consumer (not the channel drain). Queues
+ * with a configured wake hook (KV queue:hooks) are excluded too, at call time.
+ */
+export const NON_DRAIN_QUEUES = ['grok-bot']
+
+/**
+ * Optional wake-hook context. When given, a task enqueued on a queue with a
+ * configured hook (see queue-hooks.ts) fires it fire-and-forget via waitUntil.
+ */
+export interface EnqueueHookContext {
+	env: Env
+	waitUntil?: (promise: Promise<unknown>) => void
+}
+
+/** Hook context for a Worker request: fire-and-forget via ctx.waitUntil when present. */
+export function queueHookCtx(env: Env, ctx?: ExecutionContext): EnqueueHookContext {
+	return { env, waitUntil: ctx ? (p) => ctx.waitUntil(p) : undefined }
+}
+
 export async function enqueueTask(
 	db: D1Database,
 	input: {
@@ -34,6 +58,7 @@ export async function enqueueTask(
 		queue?: string
 		parentTaskId?: string
 	},
+	hook?: EnqueueHookContext,
 ): Promise<{ id: string; created_at: number }> {
 	const id = crypto.randomUUID()
 	const createdAt = Date.now()
@@ -52,6 +77,11 @@ export async function enqueueTask(
 			input.parentTaskId ?? null,
 		)
 		.run()
+	if (hook) {
+		// fireQueueHook never throws; detached when no waitUntil is available.
+		const fired = fireQueueHook(hook.env, { task_id: id, queue: input.queue ?? DEFAULT_QUEUE })
+		if (hook.waitUntil) hook.waitUntil(fired)
+	}
 	return { id, created_at: createdAt }
 }
 
@@ -122,7 +152,11 @@ export async function hasOpenTaskFromSender(db: D1Database, sender: string): Pro
 	return row != null
 }
 
-export async function countPendingTasks(db: D1Database, queue?: string): Promise<number> {
+export async function countPendingTasks(
+	db: D1Database,
+	queue?: string,
+	opts: { excludeQueues?: string[] } = {},
+): Promise<number> {
 	if (queue) {
 		const row = await db
 			.prepare("SELECT COUNT(*) AS n FROM tasks WHERE status = 'pending' AND queue = ?1")
@@ -134,18 +168,39 @@ export async function countPendingTasks(db: D1Database, queue?: string): Promise
 	// Mac warm worker). Fleet queues (agent:<id> work tasks, broker:ops) are
 	// drained by boxes and the broker executor, NOT the channel drain — counting
 	// them here woke the drain, which then claimed cloud-agent tasks out from
-	// under their boxes (2026-09-08). Exclude them.
+	// under their boxes (2026-09-08). Named non-drain queues (grok-bot, hooked
+	// queues) have their own consumer; counting them re-fires the drain forever.
+	const excluded = [...new Set([...NON_DRAIN_QUEUES, ...(opts.excludeQueues ?? [])])]
+	const prefixClauses = FLEET_QUEUE_PREFIXES.map((_, i) => `queue NOT LIKE ?${i + 1}`)
+	const inList = excluded.map((_, i) => `?${FLEET_QUEUE_PREFIXES.length + i + 1}`).join(', ')
 	const row = await db
 		.prepare(
-			"SELECT COUNT(*) AS n FROM tasks WHERE status = 'pending' AND queue NOT LIKE 'agent:%' AND queue NOT LIKE 'broker:%'",
+			`SELECT COUNT(*) AS n FROM tasks WHERE status = 'pending' AND ${prefixClauses.join(' AND ')} AND queue NOT IN (${inList})`,
 		)
+		.bind(...FLEET_QUEUE_PREFIXES.map((p) => `${p}%`), ...excluded)
 		.first<{ n: number }>()
 	return row?.n ?? 0
 }
 
+/**
+ * Body of GET /admin/tasks/pending. `?queue=` scopes the count to one queue;
+ * without it, the channel drain's count also skips every hooked queue (they
+ * have their own consumer).
+ */
+export async function pendingTaskSummary(
+	env: Env,
+	queue: string | null,
+): Promise<{ queue?: string; pending: number }> {
+	if (queue) return { queue, pending: await countPendingTasks(env.FERMI_DB, queue) }
+	// A hook on the default queue only adds a wake signal; main is still the
+	// channel drain's queue, so it must never be excluded from this count.
+	const excludeQueues = Object.keys(await loadQueueHooks(env)).filter((q) => q !== DEFAULT_QUEUE)
+	return { pending: await countPendingTasks(env.FERMI_DB, undefined, { excludeQueues }) }
+}
+
 /** Queues owned by the cloud fleet / broker — off-limits to the channel drain. */
 export function isFleetQueue(queue?: string): boolean {
-	return !!queue && (queue.startsWith('agent:') || queue.startsWith('broker:'))
+	return !!queue && FLEET_QUEUE_PREFIXES.some((p) => queue.startsWith(p))
 }
 
 export async function listTasks(
