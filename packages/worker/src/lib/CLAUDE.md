@@ -26,6 +26,7 @@ Core utilities and data stores used across the worker.
 - **embeddings.ts** — Workers AI embedding generation
 - **rrf.ts** — Reciprocal Rank Fusion: merges FTS5 + Vectorize results
 - **frontmatter.ts** — SKILL.md YAML frontmatter parser
+- **queue-hooks.ts** — Outbound wake on enqueue, configured by the KV key `queue:hooks`
 - **shell-blocklist.ts** — Dangerous command pattern matching
 - **crypto.ts** — Encryption helpers for secrets vault
 - **mime-types.ts** — File extension to MIME type mapping

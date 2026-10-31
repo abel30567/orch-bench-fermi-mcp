@@ -27,6 +27,11 @@ export class FermiMCP extends McpAgent<Env, State, Props> {
 		return this.env
 	}
 
+	// Tool handlers run outside the class; ctx is protected.
+	get durableCtx(): DurableObjectState {
+		return this.ctx
+	}
+
 	async init() {
 		const host = this.props?.baseUrl ?? 'mcp'
 		this.principal = host.startsWith('box:') ? 'box' : 'owner'

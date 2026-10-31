@@ -9,8 +9,8 @@ The full, source-anchored description lives in [`docs/ARCHITECTURE.md`](https://
 - **`FermiMCP` (Durable Object)** owns the MCP session — tool registration, the guardrail pipeline (plan-mode check → approval gate for `risk: high` → deny-hooks → execute + audit).
 - **D1** owns memory, messages (+FTS), skills metadata, secrets metadata, audit, hooks, tasks, fleet state, web-session metadata.
 - **R2** owns SKILL.md bodies, files, `/apps/*` static hosting, artifacts.
-- **KV** owns runtime config (`fleet:config`), approval tokens, allowlists.
-- **The task queue (D1 `tasks`)** is the spine connecting everything: channels enqueue, daemons and boxes claim, `task_wait` lets an orchestrator await completion. Queues are namespaced strings; `agent:<id>` and `broker:ops` are fleet-owned and **off-limits to the channel drain** (`isFleetQueue`, `lib/task-store.ts`) — a lesson paid for in production, see [the task-theft incident](/blog/03-task-theft).
+- **KV** owns runtime config (`fleet:config`, `queue:hooks`), approval tokens, allowlists.
+- **The task queue (D1 `tasks`)** is the spine connecting everything: channels enqueue, daemons and boxes claim, `task_wait` lets an orchestrator await completion. Queues are namespaced strings; `agent:<id>` and `broker:ops` are fleet-owned and **off-limits to the channel drain** (`isFleetQueue`, `lib/task-store.ts`) — a lesson paid for in production, see [the task-theft incident](/blog/03-task-theft). `grok-bot` is claimed by Grok Bot via `task_claim` and excluded from the drain signal (`NON_DRAIN_QUEUES`); the KV key `queue:hooks` can wake a queue's external consumer on enqueue (`lib/queue-hooks.ts`).
 
 ## Tool surface
 
