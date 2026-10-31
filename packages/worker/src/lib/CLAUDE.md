@@ -8,6 +8,9 @@ Core utilities and data stores used across the worker.
 - **skills-store.ts** — R2 read/write for SKILL.md files + Vectorize semantic index
 - **usage-store.ts** — Per-tool analytics: call counts, success/denied, timestamps
 - **secrets-store.ts** — Encrypted vault: allowed_hosts, allowed_capabilities enforcement
+- **task-store.ts** — D1 task queue; `NON_DRAIN_QUEUES` lists queues the channel drain ignores
+- **queue-hooks.ts** — Outbound wake hook on enqueue (KV `queue:hooks` → POST `{task_id, queue}` with a vault-secret auth header)
+- **admin-tasks.ts** — `GET /admin/tasks/pending[?queue=]` handler
 - **session-store.ts** / **session.ts** — Session lifecycle and message history
 - **browser-session-store.ts** / **browser-store.ts** — Browser session persistence
 - **connectors-store.ts** — External service connector CRUD

@@ -27,6 +27,11 @@ export class FermiMCP extends McpAgent<Env, State, Props> {
 		return this.env
 	}
 
+	/** Keep background work (e.g. queue wake hooks) alive past the tool call. */
+	waitUntil(promise: Promise<unknown>): void {
+		this.ctx.waitUntil(promise)
+	}
+
 	async init() {
 		const host = this.props?.baseUrl ?? 'mcp'
 		this.principal = host.startsWith('box:') ? 'box' : 'owner'

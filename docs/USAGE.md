@@ -307,6 +307,41 @@ The daily brief posts to whichever channel is configured in KV
 (`config:daily_brief:channel`, `config:daily_brief:chat_id`, and for Slack
 `config:daily_brief:slack_channel`).
 
+### Handing tasks to Grok Bot (`grok-bot` queue)
+
+Claude Code sessions and fleet agents can hand work to Grok Bot (Chief of Staff)
+so it runs on Grok Bot's own inference:
+
+- **Enqueue:** `task_enqueue({ channel: "cloud", queue: "grok-bot", sender, chat_id, payload })`
+  where `payload` is a JSON string
+  `{ "v": 1, "ask": "...", "context": "...", "repo": "owner/name", "expected_output": "...", "deadline_min": 30 }`.
+- **Grok Bot:** `task_claim({ queue: "grok-bot", claimed_by: "grok-bot", lease_minutes: 60 })`,
+  does the work, then `task_complete` with a short result. Long output goes to
+  memory key `handoff:<task_id>` and the result reads `memory:handoff:<task_id>`.
+- **Cheap check:** `GET /admin/tasks/pending?queue=grok-bot` returns that queue's
+  count. Without `queue` the count is the channel drain's wake signal and
+  excludes non-drain queues (`agent:*`, `broker:*`, `grok-bot`).
+- **Awaiting the result:** `task_wait` caps at 120 s per call. For longer work,
+  loop: call `task_wait({ id, timeout_seconds: 120 })` again while it returns
+  `timeout`, up to the payload's `deadline_min`.
+
+**Wake hook (optional).** To have Fermi wake a queue's consumer on enqueue
+instead of waiting for its poll timer, set KV `queue:hooks` to a JSON map and
+store the auth value as an app-scope secret whose allowed hosts include the
+URL's host:
+
+```bash
+wrangler kv key put --binding FERMI_KV queue:hooks \
+  '{"grok-bot":{"url":"https://<routine-webhook>","auth_header":"x-api-key","secret":"GROKBOT_WEBHOOK_KEY"}}'
+# then: secret_set GROKBOT_WEBHOOK_KEY (scope app, allowed_hosts [<routine-webhook host>])
+```
+
+Every enqueue to that queue POSTs `{ "task_id", "queue" }` fire-and-forget
+(up to 3 attempts at 0 s / 2 s / 8 s; retries on network errors, 429 and 5xx).
+A hook failure never fails the enqueue. With no config, a missing secret, or a
+host the secret isn't approved for, the hook is skipped. Fleet-internal
+enqueues (`agent:*`, `broker:*`) don't fire hooks.
+
 ---
 
 ## 7. Optional: the macOS bridge (local browser + desktop control)
