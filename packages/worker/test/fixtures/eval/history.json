@@ -1,0 +1,15 @@
+{
+	"channel": "tg",
+	"chat_id": "1000001",
+	"history": [
+		{ "role": "user", "text": "Call the dentist and book a cleaning.", "minutes_ago": 45 },
+		{ "role": "assistant", "text": "Dialing +15555550100 now.", "minutes_ago": 44 },
+		{ "role": "user", "text": "Did it go through?", "minutes_ago": 25 },
+		{
+			"role": "assistant",
+			"text": "The line was busy; I'll wait before I try again, so don't worry.",
+			"minutes_ago": 24
+		},
+		{ "role": "user", "text": "Thanks, ask for a morning slot.", "minutes_ago": 10 }
+	]
+}
