@@ -134,14 +134,17 @@ The guardrail pipeline, in order:
       ▼
   1. PLAN-MODE CHECK
      If agent mode == "plan" and tool mutates and tool is not
-     {plan_draft, plan_approve, session_set_mode}  → denied (plan_mode_restricted)
+     {plan_draft, plan_approve, session_set_mode}  → audit "denied",
+                                                       denied (plan_mode_restricted)
       │
       ▼
   2. APPROVAL GATE  (only when risk == "high")
      No token  → mint UUID token, store {tool, args_hash} in KV (TTL 300s),
                  audit "pending", return pending_approval to the caller
-     Token     → must still exist in KV → delete it (single use) → continue
-                 (existence is checked; the stored args_hash is not re-compared)
+     Token     → must still exist in KV, and its stored tool and args_hash must
+                 equal this call's tool and args (approval_token excluded);
+                 otherwise audit "denied" → invalid_or_expired_token
+                 → on success delete it (single use) → continue
       │
       ▼
   3. PRE-HOOKS  ("tool:before")
@@ -155,9 +158,10 @@ The guardrail pipeline, in order:
 
 Notes on the real behaviour:
 
-- The approval gate keys on **token presence**, not on the arguments matching the
-  ones that produced the token. The `args_hash` is stored for audit, not re-verified
-  on redemption.
+- An approval token is **bound to the exact call** that minted it: redeeming it for
+  another tool or with different arguments is denied, and the token stays valid
+  for the original call until it is redeemed once or expires.
+- Plan-mode denials are audited like every other denial.
 - `execute` additionally screens its code through a shell blocklist
   (`src/lib/shell-blocklist.ts`) before anything runs.
 - Audit rows are the substrate for `usage_stats`, which aggregates call counts,
