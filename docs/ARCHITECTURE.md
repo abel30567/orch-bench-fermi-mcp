@@ -370,8 +370,9 @@ same `runAgentTurn` loop with a role-specific system prompt
 (`researcher`/`writer`/`verifier`/`planner`/`executor`). Honest scope:
 
 - The role changes the **system prompt only**.
-- `allowed_tools` is accepted in the schema but is **not currently passed through** to
-  the subagent, so it does not restrict the subagent's tools.
+- `allowed_tools` narrows the subagent's curated tool set (`memory_recall`,
+  `memory_write`, `search`, `fs_read`, `fs_list`) to the named tools; a name outside that
+  set is rejected. Without it the subagent gets the full curated set.
 - Concurrency is capped (default 3, `team:max_concurrent` in KV); spawns are recorded
   in the `team_spawns` table with their final report.
 
