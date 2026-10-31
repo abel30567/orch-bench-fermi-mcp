@@ -30,7 +30,8 @@ Outbound HTTP is refused unless a test mocks it with `fetchMock`. The macOS brid
 
 ```bash
 bun run dev           # Local dev server
-bun run test          # Unit + contract test projects
+bun run test          # Boot-pin harness + unit + contract test projects
+bun run test:boot-pin # Runs the real user-data against fake curl/shutdown/systemctl
 bun run test:contract # Contract tests only (real worker over MCP)
 bun run tool-surface  # Regenerate tool-surface.json from the live worker
 bun run migrate:local # Apply migrations locally

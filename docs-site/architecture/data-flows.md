@@ -114,9 +114,9 @@ sequenceDiagram
     participant W as Worker
     participant B as Booting box
     participant GH as raw.githubusercontent.com
-    Op->>W: fleetctl pin-runner (ref + sha256 → fleet:config)
+    Op->>W: fleetctl pin-runner (ref + file sha256s → fleet:config)
     Note over W: launch REFUSES while unpinned
-    B->>GH: fetch box-runner.mjs @pinned ref (curl --retry 4)
+    B->>GH: fetch pinned runner files @pinned ref (curl --retry 4)
     B->>B: sha256 verify
     alt match
         B->>B: install, run
