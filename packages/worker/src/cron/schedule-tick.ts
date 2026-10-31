@@ -16,12 +16,16 @@ export async function handleScheduleTick(env: Env, now = Date.now()) {
 			await advanceSchedule(env.FERMI_DB, schedule, 'coalesced', now)
 			continue
 		}
-		await enqueueTask(env.FERMI_DB, {
-			channel: schedule.channel,
-			sender,
-			chatId: schedule.chat_id,
-			payload: schedule.prompt,
-		})
+		await enqueueTask(
+			env.FERMI_DB,
+			{
+				channel: schedule.channel,
+				sender,
+				chatId: schedule.chat_id,
+				payload: schedule.prompt,
+			},
+			{ env },
+		)
 		await advanceSchedule(env.FERMI_DB, schedule, 'enqueued', now)
 		enqueued++
 	}

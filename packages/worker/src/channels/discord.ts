@@ -2,7 +2,7 @@ import { isAllowed } from '../lib/allowlist-store.ts'
 import { logChannelMessage } from '../lib/conversation.ts'
 import { timingSafeEqual } from '../lib/crypto.ts'
 import { approvePairing } from '../lib/pairing.ts'
-import { enqueueTask } from '../lib/task-store.ts'
+import { enqueueHook, enqueueTask } from '../lib/task-store.ts'
 
 interface DiscordInbound {
 	author_id?: string
@@ -15,7 +15,11 @@ interface DiscordInbound {
 const APPROVE_COMMAND = /^\/approve\s+(\S+)/i
 const DISCORD_MAX_LENGTH = 2000
 
-export async function handleDiscordWebhook(request: Request, env: Env): Promise<Response> {
+export async function handleDiscordWebhook(
+	request: Request,
+	env: Env,
+	ctx?: ExecutionContext,
+): Promise<Response> {
 	// Fail closed: reject when the bridge secret is unset or the header mismatches.
 	const secret = env.DISCORD_BRIDGE_SECRET
 	const header = request.headers.get('x-dc-bridge-secret') ?? ''
@@ -42,12 +46,16 @@ export async function handleDiscordWebhook(request: Request, env: Env): Promise<
 		// own daemon on 200, so no push-wake is needed here.
 		const attribution = `[${body.display_name ?? authorId}] `
 		await logChannelMessage(env.FERMI_DB, 'dc', chatId, 'user', attribution + text)
-		await enqueueTask(env.FERMI_DB, {
-			channel: 'dc',
-			sender: authorId,
-			chatId,
-			payload: attribution + text,
-		})
+		await enqueueTask(
+			env.FERMI_DB,
+			{
+				channel: 'dc',
+				sender: authorId,
+				chatId,
+				payload: attribution + text,
+			},
+			enqueueHook(env, ctx),
+		)
 		return new Response('ok')
 	}
 
@@ -82,7 +90,11 @@ export async function handleDiscordWebhook(request: Request, env: Env): Promise<
 
 	// Gateway: log the turn, enqueue for the local daemon, ack.
 	await logChannelMessage(env.FERMI_DB, 'dc', chatId, 'user', text)
-	await enqueueTask(env.FERMI_DB, { channel: 'dc', sender: authorId, chatId, payload: text })
+	await enqueueTask(
+		env.FERMI_DB,
+		{ channel: 'dc', sender: authorId, chatId, payload: text },
+		enqueueHook(env, ctx),
+	)
 	await sendDiscordMessage(env, chatId, 'Got it — working on it.')
 	return new Response('ok')
 }

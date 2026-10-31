@@ -307,6 +307,32 @@ The daily brief posts to whichever channel is configured in KV
 (`config:daily_brief:channel`, `config:daily_brief:chat_id`, and for Slack
 `config:daily_brief:slack_channel`).
 
+### Handing tasks to Grok Bot (`grok-bot` queue)
+
+Agents hand work to Grok Bot by calling `task_enqueue` with `queue: "grok-bot"`,
+`channel: "cloud"`, and a JSON-string payload:
+`{ "v": 1, "ask": "...", "context": "...", "repo": "owner/name", "expected_output": "...", "deadline_min": 30 }`.
+Grok Bot calls `task_claim({ queue: "grok-bot", claimed_by: "grok-bot", lease_minutes: 60 })`,
+then `task_complete`. It writes long output to memory key `handoff:<task_id>` and
+sets the result to `memory:handoff:<task_id>`. To collect the result, the caller
+re-runs `task_wait` on the task id until the task is done.
+
+`grok-bot` is a non-drain queue: the unscoped `GET /admin/tasks/pending` count
+(the Mac drain's wake signal) skips it. Use `GET /admin/tasks/pending?queue=grok-bot`
+for a per-queue count.
+
+**Wake hook (disabled until configured).** On enqueue, the Worker POSTs
+`{ "task_id", "queue" }` to the URL set for that queue in KV `queue:hooks`. The
+call runs in the background with retries on network errors, 429, and 5xx:
+
+```json
+{ "grok-bot": { "url": "https://…/routine/webhook", "auth_header": "x-api-key", "secret": "GROKBOT_WEBHOOK_KEY" } }
+```
+
+The header value comes from the app-scope secret `secret`. The secret's
+`allowed_hosts` must include the URL's host, or the hook is skipped. If no
+entry is set, the hook does nothing. A failed hook never fails the enqueue.
+
 ---
 
 ## 7. Optional: the macOS bridge (local browser + desktop control)

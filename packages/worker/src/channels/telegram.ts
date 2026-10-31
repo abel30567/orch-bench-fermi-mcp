@@ -3,7 +3,7 @@ import { logChannelMessage } from '../lib/conversation.ts'
 import { timingSafeEqual } from '../lib/crypto.ts'
 import { wakeMacDaemon } from '../lib/mac-wake.ts'
 import { approvePairing } from '../lib/pairing.ts'
-import { enqueueTask } from '../lib/task-store.ts'
+import { enqueueHook, enqueueTask } from '../lib/task-store.ts'
 
 interface TelegramMessage {
 	message_id: number
@@ -65,12 +65,16 @@ export async function handleTelegramWebhook(
 		// Group turn: attribute the speaker, enqueue, no /approve, no ack.
 		const attribution = `[${message.from.first_name ?? senderId}] `
 		await logChannelMessage(env.FERMI_DB, 'tg', chatId, 'user', attribution + text)
-		await enqueueTask(env.FERMI_DB, {
-			channel: 'tg',
-			sender: senderId,
-			chatId,
-			payload: attribution + text,
-		})
+		await enqueueTask(
+			env.FERMI_DB,
+			{
+				channel: 'tg',
+				sender: senderId,
+				chatId,
+				payload: attribution + text,
+			},
+			enqueueHook(env, ctx),
+		)
 		if (ctx) ctx.waitUntil(wakeMacDaemon(env))
 		else await wakeMacDaemon(env)
 		return new Response('ok')
@@ -92,7 +96,11 @@ export async function handleTelegramWebhook(
 	// Gateway: log the turn, enqueue for the local daemon, ack, and push-wake
 	// the daemon so pickup doesn't wait for the next 60s poll.
 	await logChannelMessage(env.FERMI_DB, 'tg', chatId, 'user', text)
-	await enqueueTask(env.FERMI_DB, { channel: 'tg', sender: senderId, chatId, payload: text })
+	await enqueueTask(
+		env.FERMI_DB,
+		{ channel: 'tg', sender: senderId, chatId, payload: text },
+		enqueueHook(env, ctx),
+	)
 	await sendTelegramMessage(env, chatId, 'Got it — working on it.')
 	if (ctx) ctx.waitUntil(wakeMacDaemon(env))
 	else await wakeMacDaemon(env)
