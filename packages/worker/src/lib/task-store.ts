@@ -1,3 +1,5 @@
+import { fireQueueHook } from './queue-hooks.ts'
+
 export interface TaskRow {
 	id: string
 	channel: string
@@ -24,6 +26,40 @@ const DEFAULT_CLAIM_LIMIT = 3
 const DEFAULT_STALE_MS = 15 * 60_000
 export const DEFAULT_QUEUE = 'main'
 
+/**
+ * Queues NOT drained by the channel drain (Mac warm worker), so they must not
+ * count toward its wake signal. Prefixes cover the cloud fleet (agent:<id>
+ * work tasks) and the broker executor; exact names cover external consumers
+ * like Grok Bot, which claims `grok-bot` itself.
+ */
+export const NON_DRAIN_QUEUE_PREFIXES = ['agent:', 'broker:'] as const
+export const NON_DRAIN_QUEUES = ['grok-bot'] as const
+
+export function isNonDrainQueue(queue?: string): boolean {
+	if (!queue) return false
+	return (
+		NON_DRAIN_QUEUE_PREFIXES.some((p) => queue.startsWith(p)) ||
+		(NON_DRAIN_QUEUES as readonly string[]).includes(queue)
+	)
+}
+
+/**
+ * Optional context for the outbound queue wake hook (lib/queue-hooks.ts).
+ * When given, enqueueTask fires the hook fire-and-forget after the insert;
+ * pass waitUntil so the runtime keeps the hook alive past the response.
+ */
+export interface EnqueueHookContext {
+	env: Env
+	waitUntil?: (promise: Promise<unknown>) => void
+}
+
+export function enqueueHook(
+	env: Env,
+	ctx?: { waitUntil(promise: Promise<unknown>): void },
+): EnqueueHookContext {
+	return { env, waitUntil: ctx ? (p) => ctx.waitUntil(p) : undefined }
+}
+
 export async function enqueueTask(
 	db: D1Database,
 	input: {
@@ -34,9 +70,11 @@ export async function enqueueTask(
 		queue?: string
 		parentTaskId?: string
 	},
+	hook?: EnqueueHookContext,
 ): Promise<{ id: string; created_at: number }> {
 	const id = crypto.randomUUID()
 	const createdAt = Date.now()
+	const queue = input.queue ?? DEFAULT_QUEUE
 	await db
 		.prepare(
 			'INSERT INTO tasks (id, channel, sender, chat_id, payload, created_at, queue, parent_task_id) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)',
@@ -48,10 +86,15 @@ export async function enqueueTask(
 			input.chatId,
 			input.payload,
 			createdAt,
-			input.queue ?? DEFAULT_QUEUE,
+			queue,
 			input.parentTaskId ?? null,
 		)
 		.run()
+	if (hook) {
+		// fireQueueHook never rejects, so the hook can't fail the enqueue.
+		const pending = fireQueueHook(hook.env, { task_id: id, queue })
+		hook.waitUntil?.(pending)
+	}
 	return { id, created_at: createdAt }
 }
 
@@ -131,14 +174,18 @@ export async function countPendingTasks(db: D1Database, queue?: string): Promise
 		return row?.n ?? 0
 	}
 	// Unscoped count is the CHANNEL drain's signal (/admin/tasks/pending → the
-	// Mac warm worker). Fleet queues (agent:<id> work tasks, broker:ops) are
-	// drained by boxes and the broker executor, NOT the channel drain — counting
-	// them here woke the drain, which then claimed cloud-agent tasks out from
-	// under their boxes (2026-09-08). Exclude them.
+	// Mac warm worker). Non-drain queues (agent:<id> work tasks, broker:ops,
+	// grok-bot) are drained elsewhere — counting them woke the drain, which
+	// claimed cloud-agent tasks out from under their boxes (2026-09-08), or
+	// kept re-firing on an empty `main` while a grok-bot task waited.
+	const prefixes = NON_DRAIN_QUEUE_PREFIXES.map((p) => `${p}%`)
+	const notLike = prefixes.map((_, i) => `queue NOT LIKE ?${i + 1}`).join(' AND ')
+	const notIn = NON_DRAIN_QUEUES.map((_, i) => `?${prefixes.length + i + 1}`).join(', ')
 	const row = await db
 		.prepare(
-			"SELECT COUNT(*) AS n FROM tasks WHERE status = 'pending' AND queue NOT LIKE 'agent:%' AND queue NOT LIKE 'broker:%'",
+			`SELECT COUNT(*) AS n FROM tasks WHERE status = 'pending' AND ${notLike} AND queue NOT IN (${notIn})`,
 		)
+		.bind(...prefixes, ...NON_DRAIN_QUEUES)
 		.first<{ n: number }>()
 	return row?.n ?? 0
 }

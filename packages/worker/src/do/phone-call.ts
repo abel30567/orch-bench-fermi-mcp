@@ -23,7 +23,7 @@ import {
 	writeCallSummary,
 } from '../lib/phone-call.ts'
 import { FRAME_MS, HoldDetector, ulawFrameRms } from '../lib/phone-hold.ts'
-import { enqueueTask } from '../lib/task-store.ts'
+import { enqueueHook, enqueueTask } from '../lib/task-store.ts'
 
 const OPENAI_LIVE_URL = 'https://api.openai.com/v1/live/sessions'
 const REPLAY_FRAMES = 400 // 8 s of 20 ms frames replayed to GPT-Live when it (re)connects
@@ -693,12 +693,16 @@ export class PhoneCallDO extends DurableObject<Env> {
 		}
 		if (record.notify) {
 			try {
-				await enqueueTask(this.env.FERMI_DB, {
-					channel: record.notify.channel,
-					sender: `phone:${record.id}`,
-					chatId: record.notify.chat_id,
-					payload: buildNotifyPayload(record),
-				})
+				await enqueueTask(
+					this.env.FERMI_DB,
+					{
+						channel: record.notify.channel,
+						sender: `phone:${record.id}`,
+						chatId: record.notify.chat_id,
+						payload: buildNotifyPayload(record),
+					},
+					enqueueHook(this.env, this.ctx),
+				)
 				await wakeMacDaemon(this.env)
 			} catch (e) {
 				logCallEvent(record, 'notify_error', err(e))
