@@ -14,6 +14,11 @@ export interface ChannelContext {
 	slackChannel?: string
 }
 
+export interface AgentTurnOptions {
+	/** Restrict the curated tool set to these names. Omitted means every curated tool. */
+	tools?: string[]
+}
+
 const SYSTEM_PROMPT =
 	'You are Fermi, a personal AI agent. Use the available tools to help the user. Be concise.'
 
@@ -84,6 +89,9 @@ function getToolDefinitions(): Tool[] {
 		},
 	]
 }
+
+/** Names of the curated tools the inference loop can offer. */
+export const CURATED_TOOL_NAMES: readonly string[] = getToolDefinitions().map((t) => t.name)
 
 /**
  * Execute a tool by name against environment bindings directly,
@@ -170,6 +178,7 @@ export async function runAgentTurn(
 	message: string,
 	env: Env,
 	_channel: ChannelContext,
+	options: AgentTurnOptions = {},
 ): Promise<string> {
 	// Budget check — fallback to Workers AI if over budget
 	if (await isOverBudget(env.FERMI_KV)) {
@@ -182,7 +191,9 @@ export async function runAgentTurn(
 	}
 
 	const client = new Anthropic({ apiKey, baseURL: apiBase(env, 'ANTHROPIC_API_BASE') })
-	const tools = getToolDefinitions()
+	const allowed = options.tools ? new Set(options.tools) : undefined
+	const tools = getToolDefinitions().filter((t) => !allowed || allowed.has(t.name))
+	const offered = new Set(tools.map((t) => t.name))
 	const messages: MessageParam[] = [{ role: 'user', content: message }]
 
 	const MAX_TURNS = 8
@@ -192,7 +203,7 @@ export async function runAgentTurn(
 			model: 'claude-haiku-4-5-20251001',
 			max_tokens: 4096,
 			system: SYSTEM_PROMPT,
-			tools,
+			...(tools.length > 0 ? { tools } : {}),
 			messages,
 		})
 
@@ -207,11 +218,10 @@ export async function runAgentTurn(
 			const toolResults: ToolResultBlockParam[] = []
 			for (const block of response.content) {
 				if (block.type === 'tool_use') {
-					const result = await executeToolByName(
-						block.name,
-						block.input as Record<string, unknown>,
-						env,
-					)
+					// Never run a tool the model was not offered.
+					const result = offered.has(block.name)
+						? await executeToolByName(block.name, block.input as Record<string, unknown>, env)
+						: JSON.stringify({ error: `Tool not available: ${block.name}` })
 					toolResults.push({
 						type: 'tool_result',
 						tool_use_id: block.id,
