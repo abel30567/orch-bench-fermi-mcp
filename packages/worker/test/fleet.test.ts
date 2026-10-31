@@ -27,7 +27,7 @@ import {
 	failOpenTask,
 	waitForTask,
 } from '../src/lib/task-store.ts'
-import { runWithGuardrails } from '../src/lib/tool.ts'
+import { APPROVAL_TOKEN_TTL_MS, runWithGuardrails } from '../src/lib/tool.ts'
 import { agentStall, cloudAgentLaunchSchema } from '../src/mcp/tools/cloud-agents.ts'
 import {
 	clearAudit,
@@ -299,6 +299,87 @@ describe('high-risk approval flow (guardrails)', () => {
 			handler: async () => 'nope',
 		})
 		expect(result.kind).toBe('denied')
+	})
+
+	const mint = async (args: Record<string, unknown>) => {
+		const minted = await runWithGuardrails({
+			def: highRiskDef,
+			args,
+			env,
+			approvalPolicy: 'pending_token',
+			handler: async () => 'unreachable',
+		})
+		if (minted.kind !== 'pending_approval') throw new Error(`expected a token, got ${minted.kind}`)
+		return minted.token
+	}
+
+	it('stores the token in D1 with expires_at 300 s after minting', async () => {
+		const before = Date.now()
+		const token = await mint({ prompt: 'ttl' })
+		const row = await env.FERMI_DB.prepare(
+			'SELECT expires_at FROM approval_tokens WHERE token = ?1',
+		)
+			.bind(token)
+			.first<{ expires_at: number }>()
+		expect(APPROVAL_TOKEN_TTL_MS).toBe(300_000)
+		expect(row?.expires_at).toBeGreaterThanOrEqual(before + 300_000)
+		expect(row?.expires_at).toBeLessThanOrEqual(Date.now() + 300_000)
+		expect(await env.FERMI_KV.get(`approval:${token}`)).toBeNull()
+	})
+
+	it('rejects an expired token', async () => {
+		const args = { prompt: 'expired' }
+		const token = await mint(args)
+		await env.FERMI_DB.prepare('UPDATE approval_tokens SET expires_at = ?1 WHERE token = ?2')
+			.bind(Date.now() - 1, token)
+			.run()
+		const result = await runWithGuardrails({
+			def: highRiskDef,
+			args,
+			env,
+			approvalToken: token,
+			approvalPolicy: 'pending_token',
+			handler: async () => 'ran',
+		})
+		expect(result).toEqual({ kind: 'denied', reason: 'invalid_or_expired_token' })
+	})
+
+	it('keeps a token for other args unspent', async () => {
+		const token = await mint({ prompt: 'a' })
+		const redeem = (prompt: string) =>
+			runWithGuardrails({
+				def: highRiskDef,
+				args: { prompt },
+				env,
+				approvalToken: token,
+				approvalPolicy: 'pending_token',
+				handler: async () => 'ran',
+			})
+		expect((await redeem('b')).kind).toBe('denied')
+		expect(await redeem('a')).toEqual({ kind: 'ok', value: 'ran' })
+	})
+
+	it('lets exactly one of 20 concurrent redeems through', async () => {
+		const args = { prompt: 'race' }
+		const token = await mint(args)
+		let calls = 0
+		const results = await Promise.all(
+			Array.from({ length: 20 }, () =>
+				runWithGuardrails({
+					def: highRiskDef,
+					args,
+					env,
+					approvalToken: token,
+					approvalPolicy: 'pending_token',
+					handler: async () => {
+						calls++
+						return 'ran'
+					},
+				}),
+			),
+		)
+		expect(results.filter((r) => r.kind === 'ok')).toHaveLength(1)
+		expect(calls).toBe(1)
 	})
 })
 
