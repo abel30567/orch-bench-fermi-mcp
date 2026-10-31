@@ -64,11 +64,7 @@ export async function handleSlackBridgeWebhook(request: Request, env: Env): Prom
 			JSON.stringify({ channel: 'sl', senderId: authorId, chatId }),
 			{ expirationTtl: 3600 },
 		)
-		await sendSlackMessage(
-			env,
-			chatId,
-			`Pairing code: ${code}\nAsk the owner to approve this code.`,
-		)
+		await ackSlack(env, chatId, `Pairing code: ${code}\nAsk the owner to approve this code.`)
 		return new Response('ok')
 	}
 
@@ -76,18 +72,30 @@ export async function handleSlackBridgeWebhook(request: Request, env: Env): Prom
 	if (approveMatch) {
 		const result = await approvePairing(env, approveMatch[1])
 		if (result.ok) {
-			await sendSlackMessage(env, chatId, `Approved sender ${result.senderId}.`)
-			await sendSlackMessage(env, result.chatId, "You're approved. Send me a message anytime.")
+			await ackSlack(env, chatId, `Approved sender ${result.senderId}.`)
+			await ackSlack(env, result.chatId, "You're approved. Send me a message anytime.")
 		} else {
-			await sendSlackMessage(env, chatId, `Approval failed: ${result.error}`)
+			await ackSlack(env, chatId, `Approval failed: ${result.error}`)
 		}
 		return new Response('ok')
 	}
 
 	await logChannelMessage(env.FERMI_DB, 'sl', chatId, 'user', text)
 	await enqueueTask(env.FERMI_DB, { channel: 'sl', sender: authorId, chatId, payload: text })
-	await sendSlackMessage(env, chatId, 'Got it — working on it.')
+	await ackSlack(env, chatId, 'Got it — working on it.')
 	return new Response('ok')
+}
+
+/**
+ * Best-effort reply from the webhook. sl-bridge retries every non-2xx, so a
+ * throw here after enqueueTask would enqueue the same message again.
+ */
+async function ackSlack(env: Env, channel: string, text: string): Promise<void> {
+	try {
+		await sendSlackMessage(env, channel, text)
+	} catch (err) {
+		console.error('slack webhook: reply send failed', err)
+	}
 }
 
 /**
