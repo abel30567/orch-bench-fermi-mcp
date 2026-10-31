@@ -367,3 +367,21 @@ export function routeHealth(
 		since,
 	}
 }
+
+/**
+ * Route health map for `/admin/fleet/status`. Claude is split per account:
+ * `claude` is the default, `claude:<account>` each alternate account seen.
+ */
+export function fleetRouteHealth(agents: CloudAgentRow[]): Record<string, RouteHealth> {
+	const routes: Record<string, RouteHealth> = {
+		claude: routeHealth(agents, 'claude'),
+		codex: routeHealth(agents, 'codex'),
+		grok: routeHealth(agents, 'grok'),
+	}
+	for (const a of agents) {
+		if (a.route === 'claude' && a.account && !routes[`claude:${a.account}`]) {
+			routes[`claude:${a.account}`] = routeHealth(agents, 'claude', a.account)
+		}
+	}
+	return routes
+}

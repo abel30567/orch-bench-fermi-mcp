@@ -6,12 +6,14 @@ import type { CloudAgentRow } from '../src/lib/fleet-store.ts'
 import {
 	accountTokenSecretName,
 	createCloudAgent,
+	fleetRouteHealth,
+	getCloudAgent,
 	registerBox,
 	routeHealth,
 } from '../src/lib/fleet-store.ts'
 import { putSecret } from '../src/lib/secrets-store.ts'
 
-// Self-contained schema (mirrors migrations 0004/0017/0020/0021/0023).
+// Self-contained schema (mirrors migrations 0004/0012/0017/0020/0021/0023).
 const SCHEMA = [
 	`CREATE TABLE IF NOT EXISTS secrets (
 		name TEXT NOT NULL, scope TEXT NOT NULL, session_id TEXT NOT NULL DEFAULT '',
@@ -33,6 +35,11 @@ const SCHEMA = [
 		created_at INTEGER NOT NULL, started_at INTEGER, ended_at INTEGER,
 		inference_usd REAL NOT NULL DEFAULT 0, instance_type TEXT, last_working_event_at INTEGER,
 		restart_count INTEGER NOT NULL DEFAULT 0, account TEXT)`,
+	`CREATE TABLE IF NOT EXISTS tasks (
+		id TEXT PRIMARY KEY, channel TEXT NOT NULL, sender TEXT NOT NULL, chat_id TEXT NOT NULL,
+		payload TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'pending', result TEXT,
+		created_at INTEGER NOT NULL, claimed_at INTEGER, completed_at INTEGER,
+		queue TEXT NOT NULL DEFAULT 'default', parent_task_id TEXT)`,
 ]
 
 const PROOF = '{"kind":"artifact","name":"out.txt"}'
@@ -47,7 +54,7 @@ beforeAll(async () => {
 })
 
 beforeEach(async () => {
-	for (const t of ['secrets', 'boxes', 'cloud_agents']) {
+	for (const t of ['secrets', 'boxes', 'cloud_agents', 'tasks']) {
 		await env.FERMI_DB.prepare(`DELETE FROM ${t}`).run()
 	}
 })
@@ -75,6 +82,23 @@ describe('launch account validation', () => {
 			n: number
 		}>()) ?? { n: -1 }
 		expect(n).toBe(0)
+	})
+
+	// A targeted box skips the FleetDO reservation and provisioning.
+	async function launchOnBox(account?: string) {
+		const box = await registerBox(env.FERMI_DB, { boxId: `box_${crypto.randomUUID()}` })
+		const r = await launchCloudAgent(env, { ...base, account, box_id: box.box_id })
+		if (!r.ok) throw new Error(`launch failed: ${r.error}`)
+		return getCloudAgent(env.FERMI_DB, r.agent_id)
+	}
+
+	it('stores the account on the launched agent row', async () => {
+		await setSecret('CLAUDE_CODE_OAUTH_TOKEN_ALT', 'tok')
+		expect((await launchOnBox('alt'))?.account).toBe('alt')
+	})
+
+	it('stores no account on a default launch', async () => {
+		expect((await launchOnBox())?.account ?? null).toBeNull()
 	})
 
 	it('maps the account id to an uppercase secret suffix', () => {
@@ -161,5 +185,42 @@ describe('routeHealth per account', () => {
 			unavailable: false,
 			consecutive_api_errors: 0,
 		})
+	})
+})
+
+describe('fleetRouteHealth', () => {
+	const ended = (i: number, route: CloudAgentRow['route'], account: string | null, exit: string) =>
+		({ id: `ca_${i}`, route, account, ended_at: 1000 + i, exit_reason: exit }) as CloudAgentRow
+	const routes = fleetRouteHealth([
+		ended(1, 'claude', 'alt', 'harness api_error 429: limit'),
+		ended(2, 'claude', 'alt', 'harness api_error 429: limit'),
+		ended(3, 'claude', 'alt', 'harness api_error 429: limit'),
+		ended(4, 'claude', 'beta', 'harness api_error 401: auth'),
+		ended(5, 'claude', null, 'completed'),
+		ended(6, 'codex', 'ignored', 'harness api_error 429: limit'),
+	])
+
+	it('emits one key per alternate claude account beside the base routes', () => {
+		expect(Object.keys(routes).sort()).toEqual([
+			'claude',
+			'claude:alt',
+			'claude:beta',
+			'codex',
+			'grok',
+		])
+	})
+
+	it('scopes each key to its own account', () => {
+		expect(routes['claude:alt']).toMatchObject({
+			account: 'alt',
+			unavailable: true,
+			consecutive_api_errors: 3,
+		})
+		expect(routes['claude:beta']).toMatchObject({
+			account: 'beta',
+			unavailable: false,
+			consecutive_api_errors: 1,
+		})
+		expect(routes.claude).toMatchObject({ account: null, unavailable: false })
 	})
 })
