@@ -24,6 +24,18 @@ describeTool('execute', () => {
 		})
 	})
 
+	it('redeems one token exactly once under 20 concurrent calls', async () => {
+		const pending = resultJson<{ token: string }>(await client.callTool('execute', { code }))
+		const results = await Promise.all(
+			Array.from({ length: 20 }, () =>
+				client.callTool('execute', { code, approval_token: pending.token }).then(resultJson),
+			),
+		)
+		const denied = { status: 'denied', reason: 'Invalid or expired approval token' }
+		expect(results.filter((r) => JSON.stringify(r) === JSON.stringify(denied))).toHaveLength(19)
+		expect(results.filter((r) => (r as { ok?: boolean }).ok === false)).toHaveLength(1)
+	})
+
 	it('returns the LOADER error when the binding is absent', async () => {
 		expect(env.LOADER).toBeUndefined()
 		expect(resultJson(await callApproved(client, 'execute', { code }))).toEqual({
