@@ -1,0 +1,36 @@
+{
+	"channel": "tg",
+	"chat_id": "1000001",
+	"history": [
+		{
+			"role": "user",
+			"text": "Call the dentist and book a cleaning for next week.",
+			"minutes_ago": 25
+		},
+		{
+			"role": "assistant",
+			"text": "Calling Dr. Example now. I will confirm the time with you before booking.",
+			"minutes_ago": 24
+		},
+		{
+			"role": "assistant",
+			"text": "The line was busy, so the call did not connect.",
+			"minutes_ago": 20
+		},
+		{ "role": "user", "text": "Try again in a bit, mornings only.", "minutes_ago": 18 },
+		{
+			"role": "assistant",
+			"text": "Noted: mornings only. I will redial shortly.",
+			"minutes_ago": 17
+		}
+	],
+	"tasks": [
+		{
+			"id": "eval-history-task-1",
+			"channel": "tg",
+			"sender": "1000001",
+			"chat_id": "1000001",
+			"payload": "Any luck with the dentist?"
+		}
+	]
+}

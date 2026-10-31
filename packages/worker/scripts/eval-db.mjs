@@ -46,7 +46,57 @@ export function seedStatements(fixture, now = Date.now()) {
 			)
 		}
 	}
+	if (fixture.history) out.push(...historyStatements(fixture, now))
 	return out
+}
+
+/** Channels with a chat transcript; the conversation tools accept exactly these. */
+export const HISTORY_CHANNELS = ['tg', 'wa', 'dc', 'sl']
+
+/**
+ * Conversation history for the scenario's inbound chat (`channel`/`chat_id`,
+ * defaulting to the first task's), written the way logChannelMessage writes it
+ * (src/lib/conversation.ts): one open `chat` session whose host is
+ * `<channel>:<chat_id>`, which getOrCreateChannelSession then reuses, and one
+ * `messages` row per turn, whose insert trigger feeds messages_fts for
+ * session_search. Each turn is created `minutes_ago` before `now`. With
+ * `sender`, user turns carry the `[sender] ` attribution the channel webhooks add
+ * in group chats. The chat's earlier sessions and messages are replaced.
+ */
+export function historyStatements(fixture, now = Date.now()) {
+	const channel = fixture.channel ?? fixture.tasks?.[0]?.channel
+	const chatId = fixture.chat_id ?? fixture.tasks?.[0]?.chat_id
+	if (!HISTORY_CHANNELS.includes(channel) || !chatId) {
+		throw new Error(
+			`fixture.history needs channel (${HISTORY_CHANNELS.join('|')}) and chat_id, got ${channel}/${chatId}`,
+		)
+	}
+	const host = `${channel}:${chatId}`
+	const turns = fixture.history.map((turn, i) => {
+		if (turn.role !== 'user' && turn.role !== 'assistant') {
+			throw new Error(`fixture.history[${i}].role must be user or assistant, got ${turn.role}`)
+		}
+		if (typeof turn.text !== 'string' || !Number.isFinite(turn.minutes_ago)) {
+			throw new Error(`fixture.history[${i}] needs text and a numeric minutes_ago`)
+		}
+		const attribution = turn.role === 'user' && fixture.sender ? `[${fixture.sender}] ` : ''
+		return {
+			role: turn.role,
+			body: attribution + turn.text,
+			created_at: Math.round(now - turn.minutes_ago * 60_000),
+		}
+	})
+	const sessionId = crypto.randomUUID()
+	const startedAt = Math.min(now, ...turns.map((t) => t.created_at))
+	return [
+		`DELETE FROM messages WHERE session_id IN (SELECT id FROM sessions WHERE host = ${sql(host)})`,
+		`DELETE FROM sessions WHERE host = ${sql(host)}`,
+		`INSERT INTO sessions (id, host, mode, started_at) VALUES (${sql(sessionId)}, ${sql(host)}, 'chat', ${startedAt})`,
+		...turns.map(
+			(t) =>
+				`INSERT INTO messages (session_id, role, body, created_at) VALUES (${sql(sessionId)}, ${sql(t.role)}, ${sql(t.body)}, ${t.created_at})`,
+		),
+	]
 }
 
 /** One query per dumped section, in order. */
@@ -61,6 +111,8 @@ export const DUMP_QUERIES = {
 	skills:
 		'SELECT slug, name, description, keywords, allowed_tools, version, source, decayed_at FROM skills ORDER BY slug',
 	audit: 'SELECT * FROM audit ORDER BY id',
+	// Channel chats only: MCP sessions log under their own hosts.
+	history: `SELECT s.host, m.role, m.body, m.created_at FROM messages m JOIN sessions s ON m.session_id = s.id WHERE substr(s.host, 1, 3) IN (${HISTORY_CHANNELS.map((c) => sql(`${c}:`)).join(', ')}) ORDER BY s.host, m.created_at, m.id`,
 }
 
 /** Shape rows (one array per DUMP_QUERIES entry, same order) like a fixture. */
@@ -69,6 +121,11 @@ export function shapeDump(rowSets) {
 	const dump = Object.fromEntries(names.map((name, i) => [name, rowSets[i] ?? []]))
 	dump.profile = Object.fromEntries(dump.profile.map((r) => [r.name, r.body]))
 	dump.memories = dump.memories.map((m) => ({ ...m, pinned: m.pinned === 1 }))
+	dump.history = dump.history.map(({ host, ...turn }) => ({
+		channel: host.slice(0, 2),
+		chat_id: host.slice(3),
+		...turn,
+	}))
 	return dump
 }
 
