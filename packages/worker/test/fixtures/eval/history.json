@@ -1,0 +1,25 @@
+{
+	"allowlist": [{ "channel": "tg", "sender_id": "1000001", "note": "owner" }],
+	"channel": "tg",
+	"chat_id": "1000001",
+	"sender": "1000001",
+	"history": [
+		{
+			"role": "user",
+			"text": "Can you call the dentist and move my cleaning to next week?",
+			"minutes_ago": 25
+		},
+		{
+			"role": "assistant",
+			"text": "Calling Dr. Example now to move your cleaning.",
+			"minutes_ago": 24
+		},
+		{
+			"role": "assistant",
+			"text": "Nobody picked up at the dentist's office, so the cleaning is still on Tuesday.",
+			"minutes_ago": 20
+		},
+		{ "role": "user", "text": "Ok, try them again in a bit.", "minutes_ago": 18 },
+		{ "role": "assistant", "text": "Will do. I'll redial shortly.", "minutes_ago": 17.5 }
+	]
+}
