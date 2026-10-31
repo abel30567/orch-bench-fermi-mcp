@@ -1,8 +1,10 @@
 #!/usr/bin/env node
 // Seed a local eval worker (wrangler.eval.jsonc) from a fixture JSON: profile,
-// memories, allowlist, pending tasks and skills. Applies D1 migrations, replaces
-// those tables with the fixture's rows via `wrangler d1 execute --local`, then
-// writes each skill through the running worker's `skill_set` tool on /mcp.
+// memories, allowlist, pending tasks, conversation history and skills. Applies D1
+// migrations, replaces those tables with the fixture's rows via `wrangler d1
+// execute --local`, logs the history through the worker's own logChannelMessage
+// (Node >= 23.6 runs the .ts source), then writes each skill through the running
+// worker's `skill_set` tool on /mcp.
 //
 //   node scripts/eval-seed.mjs test/fixtures/eval/sample.json [--persist-to DIR] \
 //     [--url http://127.0.0.1:8787]
@@ -13,8 +15,9 @@
 import { execFileSync } from 'node:child_process'
 import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
-import { seedSkills, seedStatements } from './eval-db.mjs'
+import { join, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
+import { seedHistory, seedSkills, seedStatements } from './eval-db.mjs'
 
 const args = process.argv.slice(2)
 const persistAt = args.indexOf('--persist-to')
@@ -48,6 +51,22 @@ const wrangler = (...rest) =>
 	)
 wrangler('migrations', 'apply')
 wrangler('execute', '--file', file)
+if (fixture.history) {
+	// A local D1 binding on the same persisted state (wrangler keeps it under
+	// <persist-to>/v3), so history goes through the worker's logChannelMessage.
+	const { getPlatformProxy } = await import('wrangler')
+	const proxy = await getPlatformProxy({
+		configPath: fileURLToPath(new URL('../wrangler.eval.jsonc', import.meta.url)),
+		persist: persist.length ? { path: join(resolve(persist[1]), 'v3') } : true,
+		remoteBindings: false,
+	})
+	try {
+		const count = await seedHistory(proxy.env.FERMI_DB, fixture)
+		console.log(`seeded ${count} history turn(s) into ${fixture.channel}:${fixture.chat_id}`)
+	} finally {
+		await proxy.dispose()
+	}
+}
 if (fixture.skills) {
 	await seedSkills(fixture.skills, new URL('/mcp', url).href)
 	console.log(`seeded ${fixture.skills.length} skill(s) via skill_set`)
