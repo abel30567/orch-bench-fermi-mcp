@@ -108,6 +108,49 @@ describe('MCP contract: defineTool guardrails', () => {
 		expect(replay).toEqual({ status: 'denied', reason: 'Invalid or expired approval token' })
 	})
 
+	it('20 concurrent redeems of one token yield exactly one success', async () => {
+		const client = await session()
+		const args = { name: 'contract_race' }
+		const pending = resultJson<{ status: string; token: string }>(
+			await client.callTool('retriever_delete', args),
+		)
+		expect(pending.status).toBe('pending_approval')
+
+		const results = await Promise.all(
+			Array.from({ length: 20 }, () =>
+				client.callTool('retriever_delete', { ...args, approval_token: pending.token }),
+			),
+		)
+		const outcomes = results.map((r) => resultJson(r))
+		const denied = { status: 'denied', reason: 'Invalid or expired approval token' }
+		expect(outcomes.filter((o) => JSON.stringify(o) !== JSON.stringify(denied))).toEqual([
+			{ name: 'contract_race', deleted: false },
+		])
+		expect(outcomes.filter((o) => JSON.stringify(o) === JSON.stringify(denied))).toHaveLength(19)
+	})
+
+	it('an expired approval token is denied', async () => {
+		const client = await session()
+		const args = { name: 'contract_expired' }
+		const pending = resultJson<{ status: string; token: string }>(
+			await client.callTool('retriever_delete', args),
+		)
+		const row = await env.FERMI_DB.prepare('SELECT expires_at FROM approval_tokens WHERE token = ?')
+			.bind(pending.token)
+			.first<{ expires_at: number }>()
+		expect(row?.expires_at).toBeGreaterThan(Date.now() + 295_000)
+		expect(row?.expires_at).toBeLessThanOrEqual(Date.now() + 300_000)
+
+		await env.FERMI_DB.prepare('UPDATE approval_tokens SET expires_at = ? WHERE token = ?')
+			.bind(Date.now() - 1, pending.token)
+			.run()
+		expect(
+			resultJson(
+				await client.callTool('retriever_delete', { ...args, approval_token: pending.token }),
+			),
+		).toEqual({ status: 'denied', reason: 'Invalid or expired approval token' })
+	})
+
 	it('a high-risk tool rejects a wrong token', async () => {
 		const client = await session()
 		const wrong = resultJson(
