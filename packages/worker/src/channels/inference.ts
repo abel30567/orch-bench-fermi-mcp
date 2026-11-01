@@ -14,6 +14,14 @@ export interface ChannelContext {
 	slackChannel?: string
 }
 
+export interface AgentTurnOptions {
+	/**
+	 * Restrict the curated tool set to these names. Omitted = every curated tool.
+	 * Unknown names are rejected (see selectToolDefinitions).
+	 */
+	allowedTools?: string[]
+}
+
 const SYSTEM_PROMPT =
 	'You are Fermi, a personal AI agent. Use the available tools to help the user. Be concise.'
 
@@ -83,6 +91,29 @@ function getToolDefinitions(): Tool[] {
 			},
 		},
 	]
+}
+
+/** Names of the curated tools the inference loop can expose. */
+export function curatedToolNames(): string[] {
+	return getToolDefinitions().map((t) => t.name)
+}
+
+/**
+ * The curated tool definitions, narrowed to `allowedTools` when given.
+ * Throws on a name that is not in the curated set.
+ */
+export function selectToolDefinitions(allowedTools?: string[]): Tool[] {
+	const all = getToolDefinitions()
+	if (allowedTools === undefined) return all
+	const known = new Set(all.map((t) => t.name))
+	const unknown = [...new Set(allowedTools)].filter((name) => !known.has(name))
+	if (unknown.length > 0) {
+		throw new Error(
+			`Unknown tool(s) in allowed_tools: ${unknown.join(', ')}. Allowed: ${[...known].join(', ')}`,
+		)
+	}
+	const allowed = new Set(allowedTools)
+	return all.filter((t) => allowed.has(t.name))
 }
 
 /**
@@ -170,7 +201,12 @@ export async function runAgentTurn(
 	message: string,
 	env: Env,
 	_channel: ChannelContext,
+	options: AgentTurnOptions = {},
 ): Promise<string> {
+	// Validate before any fallback so a bad allowed_tools list always fails loudly.
+	const tools = selectToolDefinitions(options.allowedTools)
+	const toolNames = new Set(tools.map((t) => t.name))
+
 	// Budget check — fallback to Workers AI if over budget
 	if (await isOverBudget(env.FERMI_KV)) {
 		return runWorkersFallback(message, env)
@@ -182,7 +218,6 @@ export async function runAgentTurn(
 	}
 
 	const client = new Anthropic({ apiKey, baseURL: apiBase(env, 'ANTHROPIC_API_BASE') })
-	const tools = getToolDefinitions()
 	const messages: MessageParam[] = [{ role: 'user', content: message }]
 
 	const MAX_TURNS = 8
@@ -192,7 +227,7 @@ export async function runAgentTurn(
 			model: 'claude-haiku-4-5-20251001',
 			max_tokens: 4096,
 			system: SYSTEM_PROMPT,
-			tools,
+			...(tools.length > 0 ? { tools } : {}),
 			messages,
 		})
 
@@ -207,11 +242,10 @@ export async function runAgentTurn(
 			const toolResults: ToolResultBlockParam[] = []
 			for (const block of response.content) {
 				if (block.type === 'tool_use') {
-					const result = await executeToolByName(
-						block.name,
-						block.input as Record<string, unknown>,
-						env,
-					)
+					// Never run a tool the caller did not expose, even if the model asks for it.
+					const result = toolNames.has(block.name)
+						? await executeToolByName(block.name, block.input as Record<string, unknown>, env)
+						: JSON.stringify({ error: `Tool not available: ${block.name}` })
 					toolResults.push({
 						type: 'tool_result',
 						tool_use_id: block.id,
