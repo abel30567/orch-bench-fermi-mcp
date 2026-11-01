@@ -16,6 +16,8 @@ The runner is now pinned. The operator sets a specific commit ref *and* its sha2
 fleetctl pin-runner   # writes runner_ref + runner_sha256
 ```
 
+When box-runner imports shared daemon modules, the pin is a manifest instead: `POST /admin/fleet/pin-runner {ref, files}` where `files` is `{path: sha256}` (or a list of paths to hash). It must include `box-runner.mjs`; every file is fetched into the same layout under `/opt/fermi` and every hash verified before anything is installed. A body without `files` is the legacy single-file pin.
+
 Three properties, all fail-closed:
 
 1. **Launch refuses while unpinned.** No pin, no fleet. You cannot accidentally run the unprotected path; the safe path is the only path.
