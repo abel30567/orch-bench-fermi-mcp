@@ -4,6 +4,7 @@ import { registerAllCapabilities } from '../../src/capabilities/index.ts'
 import { sha256Hex } from '../../src/channels/box-gateway.ts'
 import { BOX_ALLOWED_TOOLS } from '../../src/lib/box-scope.ts'
 import { registerBox } from '../../src/lib/fleet-store.ts'
+import { runWithGuardrails } from '../../src/lib/tool.ts'
 import type { FermiMCP } from '../../src/mcp/index.ts'
 import { registerTools } from '../../src/mcp/register-tools.ts'
 import { McpClient, resultJson } from './mcp-client.ts'
@@ -122,10 +123,71 @@ describe('MCP contract: defineTool guardrails', () => {
 		expect(rows.results).toEqual([])
 	})
 
-	// The redeem leg checks token existence only (docs/ARCHITECTURE.md "the stored
-	// args_hash is not re-compared"), so a token minted for one set of args currently
-	// redeems a different set.
-	it.todo('a high-risk tool rejects its token when redeemed with different args — fixed by MCP-19')
+	it('a high-risk tool rejects its token when redeemed with different args', async () => {
+		const client = await session()
+		const argsA = { name: 'contract_r4', sql: 'SELECT 1' }
+		const argsB = { name: 'contract_r4', sql: 'SELECT 2' }
+		const pending = resultJson<{ status: string; token: string }>(
+			await client.callTool('retriever_set', argsA),
+		)
+		expect(pending.status).toBe('pending_approval')
+
+		const swapped = resultJson(
+			await client.callTool('retriever_set', { ...argsB, approval_token: pending.token }),
+		)
+		expect(swapped).toEqual({ status: 'denied', reason: 'Invalid or expired approval token' })
+		expect((await env.FERMI_DB.prepare('SELECT * FROM retrievers').all()).results).toEqual([])
+
+		// the mismatch does not burn the token: the minting call still redeems, exactly once
+		const redeemed = resultJson(
+			await client.callTool('retriever_set', { ...argsA, approval_token: pending.token }),
+		)
+		expect(redeemed).toMatchObject({ status: 'stored', name: 'contract_r4' })
+		const replay = resultJson(
+			await client.callTool('retriever_set', { ...argsA, approval_token: pending.token }),
+		)
+		expect(replay).toEqual({ status: 'denied', reason: 'Invalid or expired approval token' })
+	})
+
+	it('a high-risk tool rejects a token minted for a different tool with identical args', async () => {
+		const client = await session()
+		const args = { name: 'contract_r5' }
+		const pending = resultJson<{ status: string; token: string }>(
+			await client.callTool('retriever_delete', args),
+		)
+		expect(pending.status).toBe('pending_approval')
+
+		const otherTool = resultJson(
+			await client.callTool('web_session_invalidate', { ...args, approval_token: pending.token }),
+		)
+		expect(otherTool).toEqual({ status: 'denied', reason: 'Invalid or expired approval token' })
+		const denied = await auditRows('web_session_invalidate')
+		expect(denied.map((r) => r.outcome)).toEqual(['denied'])
+	})
+
+	it('the token binding hash excludes approval_token from the call args', async () => {
+		const def = {
+			name: 'retriever_set',
+			scope: ['write:retrievers' as const],
+			risk: 'high' as const,
+			mutates: true,
+		}
+		const args = { name: 'contract_r6', sql: 'SELECT 1' }
+		const run = (callArgs: Record<string, unknown>, approvalToken?: string) =>
+			runWithGuardrails({
+				def,
+				args: callArgs,
+				env,
+				approvalToken,
+				approvalPolicy: 'pending_token',
+				handler: async () => 'ran',
+			})
+		const minted = await run(args)
+		expect(minted.kind).toBe('pending_approval')
+		const token = minted.kind === 'pending_approval' ? minted.token : ''
+		const redeemed = await run({ ...args, approval_token: token }, token)
+		expect(redeemed).toEqual({ kind: 'ok', value: 'ran' })
+	})
 
 	it('a tool:before hook with trust deny blocks the call', async () => {
 		const client = await session()
@@ -176,9 +238,7 @@ describe('MCP contract: defineTool guardrails', () => {
 		await expectOneRow('retriever_get', { name: 'contract_r3' }, 'denied')
 	})
 
-	// Current contract: the plan-mode branch returns before writeAudit. MCP-19 makes it
-	// write one 'denied' row; flip this test to expect that.
-	it('plan-mode denial currently writes no audit row (MCP-19 flips this to one denied row)', async () => {
+	it('a plan-mode denial writes exactly one denied audit row', async () => {
 		const client = await session()
 		await client.callTool('session_set_mode', { mode: 'plan' })
 		const before = (await auditRows('hooks_register')).length
@@ -186,6 +246,8 @@ describe('MCP contract: defineTool guardrails', () => {
 			await client.callTool('hooks_register', { event: 'tool:before', trust_level: 'allow' }),
 		)
 		expect(blocked.error).toBe('plan_mode_restricted')
-		expect(await auditRows('hooks_register')).toHaveLength(before)
+		const rows = await auditRows('hooks_register')
+		expect(rows).toHaveLength(before + 1)
+		expect(rows.at(-1)).toMatchObject({ tool: 'hooks_register', outcome: 'denied' })
 	})
 })
