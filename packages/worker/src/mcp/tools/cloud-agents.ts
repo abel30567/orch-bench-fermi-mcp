@@ -83,6 +83,13 @@ export const cloudAgentLaunchSchema = {
 		.describe(
 			'EC2 size for this launch (must be in fleet:config.allowed_instance_types, e.g. t3.medium for Node/TypeScript builds that need 4 GiB). Defaults to the fleet instance_type.',
 		),
+	account: z
+		.string()
+		.regex(/^[a-z][a-z0-9_]{0,31}$/)
+		.optional()
+		.describe(
+			'Alternate Claude account (claude route only); its token must be stored as the CLAUDE_CODE_OAUTH_TOKEN_<ACCOUNT> secret. Defaults to the standard account.',
+		),
 }
 
 export function registerCloudAgentTools(agent: FermiMCP) {

@@ -471,3 +471,53 @@ describe('box gateway', () => {
 		expect(body).toMatchObject({ ok: true, pending: 1, pending_control: 0 })
 	})
 })
+
+describe('alternate Claude account', () => {
+	beforeAll(async () => {
+		await setupTasksSchema()
+		await setupFleetSchema()
+		await setupSecretsSchema()
+	})
+
+	it('serves CLAUDE_CODE_OAUTH_TOKEN_<ACCOUNT> under the standard name', async () => {
+		await clearSecrets()
+		await env.FERMI_DB.prepare('DELETE FROM cloud_agents').run()
+		await env.FERMI_DB.prepare('DELETE FROM boxes').run()
+		await seedBoxAndAgent()
+		await env.FERMI_DB.prepare('UPDATE cloud_agents SET account = ?1 WHERE id = ?2')
+			.bind('alt', AGENT_ID)
+			.run()
+		await putSecret({ name: 'CLAUDE_CODE_OAUTH_TOKEN', scope: 'app', value: 'default' }, env)
+
+		const missing = await handleBoxInferenceAuth(req('/box/inference-auth'), env)
+		expect(missing.status).toBe(409)
+		expect(await missing.json()).toMatchObject({ missing: ['CLAUDE_CODE_OAUTH_TOKEN_ALT'] })
+
+		await putSecret({ name: 'CLAUDE_CODE_OAUTH_TOKEN_ALT', scope: 'app', value: 'alt-oat' }, env)
+		const ok = await handleBoxInferenceAuth(req('/box/inference-auth'), env)
+		expect(await ok.json()).toMatchObject({
+			secrets: { CLAUDE_CODE_OAUTH_TOKEN: 'alt-oat' },
+		})
+	})
+
+	it('launch fails fast on bad route, malformed id, or missing secret', async () => {
+		await clearSecrets()
+		const { launchCloudAgent } = await import('../src/lib/fleet-launch.ts')
+		const base = {
+			prompt: 'do the thing please',
+			proof_contract: JSON.stringify({ kind: 'artifact', name: 'out.txt' }),
+		}
+		expect(await launchCloudAgent(env, { ...base, route: 'codex', account: 'alt' })).toEqual({
+			ok: false,
+			error: 'account_requires_claude_route',
+		})
+		expect(await launchCloudAgent(env, { ...base, account: 'Bad-Id' })).toEqual({
+			ok: false,
+			error: 'invalid_account',
+		})
+		expect(await launchCloudAgent(env, { ...base, account: 'alt' })).toMatchObject({
+			ok: false,
+			error: 'account_token_not_configured',
+		})
+	})
+})
