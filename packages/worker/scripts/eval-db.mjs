@@ -46,6 +46,57 @@ export function seedStatements(fixture, now = Date.now()) {
 			)
 		}
 	}
+	if (fixture.history) out.push(...historyStatements(fixture, now))
+	return out
+}
+
+const CHANNELS = ['tg', 'wa', 'dc', 'sl']
+
+/**
+ * Conversation history for the fixture's inbound chat, written to the rows
+ * `logChannelMessage` (src/lib/conversation.ts) writes: one open `sessions` row
+ * keyed by host `<channel>:<chat_id>` and one `messages` row per turn (the FTS
+ * triggers index them for session_search). Only created_at differs: seed time
+ * minus `minutes_ago`. `sender` attributes user turns the way the gateways log
+ * group-chat messages (`[sender] text`); omit it for DMs. Re-seeding replaces
+ * that chat's sessions and messages.
+ */
+function historyStatements({ channel, chat_id: chatId, sender, history }, now) {
+	if (!CHANNELS.includes(channel)) {
+		throw new Error(`history needs channel (one of ${CHANNELS.join(', ')}), got ${channel}`)
+	}
+	if (typeof chatId !== 'string' || !chatId) throw new Error('history needs a chat_id string')
+	if (sender !== undefined && (typeof sender !== 'string' || !sender)) {
+		throw new Error('sender must be a non-empty string')
+	}
+	if (!Array.isArray(history)) throw new Error('history must be an array')
+	const turns = history.map((turn, i) => {
+		if (turn.role !== 'user' && turn.role !== 'assistant') {
+			throw new Error(`history[${i}].role must be "user" or "assistant"`)
+		}
+		if (typeof turn.text !== 'string') throw new Error(`history[${i}].text must be a string`)
+		if (typeof turn.minutes_ago !== 'number' || !(turn.minutes_ago >= 0)) {
+			throw new Error(`history[${i}].minutes_ago must be a number >= 0`)
+		}
+		const body = sender && turn.role === 'user' ? `[${sender}] ${turn.text}` : turn.text
+		return { role: turn.role, body, createdAt: now - Math.round(turn.minutes_ago * 60_000) }
+	})
+	const host = `${channel}:${chatId}`
+	const out = [
+		`DELETE FROM messages WHERE session_id IN (SELECT id FROM sessions WHERE host = ${sql(host)})`,
+		`DELETE FROM sessions WHERE host = ${sql(host)}`,
+	]
+	if (turns.length === 0) return out
+	const sessionId = crypto.randomUUID()
+	const startedAt = Math.min(...turns.map((t) => t.createdAt))
+	out.push(
+		`INSERT INTO sessions (id, host, mode, started_at) VALUES (${sql(sessionId)}, ${sql(host)}, 'chat', ${startedAt})`,
+	)
+	for (const t of turns) {
+		out.push(
+			`INSERT INTO messages (session_id, role, body, created_at) VALUES (${sql(sessionId)}, ${sql(t.role)}, ${sql(t.body)}, ${t.createdAt})`,
+		)
+	}
 	return out
 }
 
@@ -61,6 +112,11 @@ export const DUMP_QUERIES = {
 	skills:
 		'SELECT slug, name, description, keywords, allowed_tools, version, source, decayed_at FROM skills ORDER BY slug',
 	audit: 'SELECT * FROM audit ORDER BY id',
+	history: `SELECT substr(s.host, 1, 2) AS channel, substr(s.host, 4) AS chat_id, m.role,
+		m.body AS text, m.created_at
+		FROM messages m JOIN sessions s ON m.session_id = s.id
+		WHERE substr(s.host, 1, 3) IN ('tg:', 'wa:', 'dc:', 'sl:')
+		ORDER BY m.created_at, m.id`,
 }
 
 /** Shape rows (one array per DUMP_QUERIES entry, same order) like a fixture. */
