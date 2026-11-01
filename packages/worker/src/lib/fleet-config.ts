@@ -1,3 +1,5 @@
+import { RUNNER_ENTRY, isSafeRunnerPath, isSha256, runnerUrl } from './runner-pin.ts'
+
 export interface FleetConfig {
 	region: string
 	monthly_budget_usd: number
@@ -11,6 +13,8 @@ export interface FleetConfig {
 	/** Supply-chain pin for the box-runner boot download (#34); launch refuses when unset. */
 	runner_ref: string | null
 	runner_sha256: string | null
+	/** Multi-file runner manifest (path → sha256); null = legacy single-file pin. */
+	runner_files: Record<string, string> | null
 	default_ttl_seconds: number
 	max_ttl_seconds: number
 	heartbeat_stale_ms: number
@@ -28,6 +32,7 @@ const DEFAULTS: FleetConfig = {
 	mcp_base_url: null,
 	runner_ref: null,
 	runner_sha256: null,
+	runner_files: null,
 	default_ttl_seconds: 3600,
 	max_ttl_seconds: 4 * 3600,
 	heartbeat_stale_ms: 10 * 60_000,
@@ -148,6 +153,85 @@ export async function updateFleetConfig(
 	} catch {}
 	await env.FERMI_KV.put('fleet:config', JSON.stringify({ ...stored, ...verdict.patch }))
 	return { ok: true, config: verdict.config }
+}
+
+async function fetchSha256(url: string): Promise<{ sha256: string; bytes: number } | number> {
+	const res = await fetch(url)
+	if (!res.ok) return res.status
+	const buf = await res.arrayBuffer()
+	const digest = await crypto.subtle.digest('SHA-256', buf)
+	const sha256 = [...new Uint8Array(digest)].map((x) => x.toString(16).padStart(2, '0')).join('')
+	return { sha256, bytes: buf.byteLength }
+}
+
+/**
+ * POST /admin/fleet/pin-runner. Fetches every file at `ref`, hashes it, and
+ * stores the manifest. `files` is optional (legacy: box-runner.mjs only) and is
+ * either a list of paths (box-runner.mjs implied) or a `{ path: sha256 }`
+ * manifest whose hashes must match what the ref actually serves.
+ */
+export async function pinRunner(
+	env: Env,
+	body: { ref?: unknown; files?: unknown },
+): Promise<{ status: number; body: Record<string, unknown> }> {
+	const bad = (error: string) => ({ status: 400, body: { ok: false, error } })
+	const ref = body?.ref
+	if (typeof ref !== 'string' || !/^[0-9a-f]{7,40}$/.test(ref))
+		return bad('ref must be a commit sha')
+
+	let expected: Record<string, string | null>
+	const files = body.files
+	if (files === undefined || files === null) {
+		expected = { [RUNNER_ENTRY]: null }
+	} else if (Array.isArray(files)) {
+		if (!files.every(isSafeRunnerPath)) return bad('files must be safe relative paths')
+		expected = Object.fromEntries([RUNNER_ENTRY, ...files].map((p) => [p, null]))
+	} else if (typeof files === 'object') {
+		const entries = Object.entries(files as Record<string, unknown>)
+		if (!entries.every(([p, sha]) => isSafeRunnerPath(p) && isSha256(sha)))
+			return bad('files must map safe relative paths to sha256 hex')
+		if (!Object.hasOwn(files, RUNNER_ENTRY)) return bad(`files must include ${RUNNER_ENTRY}`)
+		expected = files as Record<string, string>
+	} else {
+		return bad('files must be a path list or a { path: sha256 } manifest')
+	}
+	if (Object.keys(expected).length > 64) return bad('too many files')
+
+	const pinned: Record<string, string> = {}
+	let bytes = 0
+	for (const path of Object.keys(expected).sort()) {
+		const got = await fetchSha256(runnerUrl(ref, path))
+		if (typeof got === 'number')
+			return { status: 502, body: { ok: false, error: `fetch_${got}`, path } }
+		const want = expected[path]
+		if (want && want !== got.sha256)
+			return {
+				status: 409,
+				body: { ok: false, error: 'sha256_mismatch', path, expected: want, actual: got.sha256 },
+			}
+		pinned[path] = got.sha256
+		bytes += got.bytes
+	}
+
+	const raw = await env.FERMI_KV.get('fleet:config')
+	let stored: Record<string, unknown> = {}
+	try {
+		stored = raw ? JSON.parse(raw) : {}
+	} catch {}
+	const legacy = Object.keys(pinned).length === 1
+	await env.FERMI_KV.put(
+		'fleet:config',
+		JSON.stringify({
+			...stored,
+			runner_ref: ref,
+			runner_sha256: pinned[RUNNER_ENTRY],
+			runner_files: legacy ? null : pinned,
+		}),
+	)
+	return {
+		status: 200,
+		body: { ok: true, ref, sha256: pinned[RUNNER_ENTRY], files: pinned, bytes },
+	}
 }
 
 export function hourlyRate(instanceType: string): number {

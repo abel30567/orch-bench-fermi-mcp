@@ -64,7 +64,7 @@ Legacy free-text contracts are grandfathered; new launches should always pass st
 | AWS access key pair | `RunInstances`/`TerminateInstances`/`DescribeInstances` | IAM policy limited to those actions, one region, your fleet security group |
 | `CLAUDE_CODE_OAUTH_TOKEN` in Fermi secrets | boxes inference on your existing Claude subscription — **inference is not billed to the budget**, EC2 wall-clock is | it's your sub; rotate from your Anthropic account |
 | `GITHUB_TOKEN` in Fermi secrets | clone/push/PR | fine-grained token, only the repos agents work |
-| `fleet:config` in KV | region, instance type, `allowed_instance_types`, `max_concurrent`, `monthly_budget_usd`, `runner_ref`+`runner_sha256`, TTLs | `GET`/`POST /admin/fleet/config` (bearer) for the operator fields; `pin-runner` for the pin |
+| `fleet:config` in KV | region, instance type, `allowed_instance_types`, `max_concurrent`, `monthly_budget_usd`, `runner_ref`+`runner_sha256` (+ optional `runner_files` manifest `{path: sha256}`), TTLs | `GET`/`POST /admin/fleet/config` (bearer) for the operator fields; `POST /admin/fleet/pin-runner {ref, files?}` for the pin — `files` is a path list (or `{path: sha256}` manifest) of extra daemon modules; omit it for a single-file pin |
 
 Cost intuition: a `t3.small` is $0.0208/hr. The 100-agent run (~6 minutes median per box) cost about **$1.60 of EC2** and zero marginal inference.
 
@@ -73,7 +73,7 @@ Sizing: `t3.small` (2 GiB) is fine for Python-only verifiers and small fixes. No
 ## Operating it
 
 ```bash
-fleetctl pin-runner        # after ANY box-runner.mjs change — launch refuses unpinned
+fleetctl pin-runner        # after ANY change to box-runner.mjs or a pinned module — launch refuses unpinned
 cloud_agent_launch ...     # from any host
 cloud_agent_list / get     # status, exit_reason, accrued cost, inference telemetry
 cloud_agent_followup       # send a follow-up prompt to a live box (agent_stalled if its runner died)
