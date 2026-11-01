@@ -24,7 +24,7 @@ Cookies decrypt only on the Mac executor. Boxes get handles; ops are launch-boun
 
 ## Layer 6 — Supply chain
 
-Boxes execute only a runner whose sha256 matches the operator-set pin; launch refuses unpinned; fetch failures and mismatches fail closed with telemetry. *Enforcement: `lib/runner-pin.ts` + tamper harness `test/shell/boot-pin-harness.sh`.*
+Boxes execute only a runner whose every file (`box-runner.mjs` plus its pinned manifest) matches the operator-set sha256 pin; a missing or altered file refuses boot; launch refuses unpinned; fetch failures and mismatches fail closed with telemetry. *Enforcement: `lib/runner-pin.ts` + tamper harness `test/shell/boot-pin-harness.sh`.*
 
 ## Layer 7 — Proof-of-work honesty
 
