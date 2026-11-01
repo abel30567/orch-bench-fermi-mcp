@@ -154,6 +154,27 @@ describe('MCP contract: defineTool guardrails', () => {
 		expect(expired).toEqual({ status: 'denied', reason: 'Invalid or expired approval token' })
 	})
 
+	it('minting an approval token purges expired tokens', async () => {
+		const client = await session()
+		const first = resultJson<{ status: string; token: string }>(
+			await client.callTool('retriever_delete', { name: 'contract_r7' }),
+		)
+		await env.FERMI_DB.prepare('UPDATE approval_tokens SET expires_at = ? WHERE token = ?')
+			.bind(Date.now() - 1, first.token)
+			.run()
+
+		const second = resultJson<{ status: string; token: string }>(
+			await client.callTool('retriever_delete', { name: 'contract_r8' }),
+		)
+		expect(second.status).toBe('pending_approval')
+		const rows = await env.FERMI_DB.prepare('SELECT token FROM approval_tokens').all<{
+			token: string
+		}>()
+		const tokens = rows.results.map((r) => r.token)
+		expect(tokens).not.toContain(first.token)
+		expect(tokens).toContain(second.token)
+	})
+
 	it('a high-risk tool rejects a wrong token', async () => {
 		const client = await session()
 		const wrong = resultJson(

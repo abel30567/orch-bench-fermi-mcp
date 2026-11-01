@@ -104,11 +104,15 @@ export async function runWithGuardrails<R>(
 				}
 			}
 			const token = crypto.randomUUID()
-			await env.FERMI_DB.prepare(
-				'INSERT INTO approval_tokens (token, tool, args_hash, expires_at) VALUES (?, ?, ?, ?)',
-			)
-				.bind(token, def.name, argsHash, Date.now() + APPROVAL_TTL_MS)
-				.run()
+			const now = Date.now()
+			// D1 rows do not expire on their own, so each mint also purges expired tokens
+			// (served by idx_approval_tokens_expires).
+			await env.FERMI_DB.batch([
+				env.FERMI_DB.prepare('DELETE FROM approval_tokens WHERE expires_at <= ?').bind(now),
+				env.FERMI_DB.prepare(
+					'INSERT INTO approval_tokens (token, tool, args_hash, expires_at) VALUES (?, ?, ?, ?)',
+				).bind(token, def.name, argsHash, now + APPROVAL_TTL_MS),
+			])
 			await writeAudit(env.FERMI_DB, {
 				tool: def.name,
 				args_hash: argsHash,
