@@ -1,6 +1,8 @@
 // SQL and MCP calls shared by eval-seed.mjs and eval-dump.mjs. No Node imports,
 // so the tests can run the same statements and calls against the test worker.
 
+import { channelHost, logChannelMessage } from '../src/lib/conversation.ts'
+
 const sql = (value) => {
 	if (value === null || value === undefined) return 'NULL'
 	if (typeof value === 'boolean') return value ? '1' : '0'
@@ -61,6 +63,12 @@ export const DUMP_QUERIES = {
 	skills:
 		'SELECT slug, name, description, keywords, allowed_tools, version, source, decayed_at FROM skills ORDER BY slug',
 	audit: 'SELECT * FROM audit ORDER BY id',
+	// Channel chats only (host `<channel>:<chat_id>`); MCP client sessions log raw
+	// tool JSON under other hosts and are not conversation history.
+	history: `SELECT substr(s.host, 1, 2) AS channel, substr(s.host, 4) AS chat_id, m.role, m.body AS text, m.created_at
+		FROM messages m JOIN sessions s ON m.session_id = s.id
+		WHERE substr(s.host, 1, 3) IN ('tg:', 'wa:', 'dc:', 'sl:')
+		ORDER BY s.host, m.created_at, m.id`,
 }
 
 /** Shape rows (one array per DUMP_QUERIES entry, same order) like a fixture. */
@@ -70,6 +78,66 @@ export function shapeDump(rowSets) {
 	dump.profile = Object.fromEntries(dump.profile.map((r) => [r.name, r.body]))
 	dump.memories = dump.memories.map((m) => ({ ...m, pinned: m.pinned === 1 }))
 	return dump
+}
+
+const HISTORY_CHANNELS = ['tg', 'wa', 'dc', 'sl']
+const HISTORY_ROLES = ['user', 'assistant']
+
+/**
+ * Validate a fixture's conversation history: `history: [{ role, text,
+ * minutes_ago }]` plus the scenario's inbound `channel` and `chat_id` (and an
+ * optional `sender`). Returns the turns oldest first, or [] when there is none.
+ */
+export function historyTurns(fixture) {
+	const { history, channel, chat_id: chatId, sender } = fixture
+	if (history === undefined) return []
+	if (!Array.isArray(history)) throw new Error('fixture.history must be an array')
+	if (!HISTORY_CHANNELS.includes(channel)) {
+		throw new Error(`fixture.history needs channel (one of ${HISTORY_CHANNELS.join(', ')})`)
+	}
+	if (typeof chatId !== 'string' || chatId === '') {
+		throw new Error('fixture.history needs a chat_id string')
+	}
+	if (sender !== undefined && typeof sender !== 'string') {
+		throw new Error('fixture.sender must be a string')
+	}
+	const turns = history.map((turn, i) => {
+		if (!HISTORY_ROLES.includes(turn?.role)) {
+			throw new Error(`fixture.history[${i}].role must be "user" or "assistant"`)
+		}
+		if (typeof turn.text !== 'string')
+			throw new Error(`fixture.history[${i}].text must be a string`)
+		if (typeof turn.minutes_ago !== 'number' || !(turn.minutes_ago >= 0)) {
+			throw new Error(`fixture.history[${i}].minutes_ago must be a number >= 0`)
+		}
+		return { role: turn.role, text: turn.text, minutes_ago: turn.minutes_ago, i }
+	})
+	// Oldest first (stable for equal times), so message ids follow time like production.
+	return turns.sort((a, b) => b.minutes_ago - a.minutes_ago || a.i - b.i)
+}
+
+/**
+ * Seed the fixture's conversation history through the real conversation store
+ * (`logChannelMessage`: the sessions/messages tables, FTS triggers included),
+ * each turn timestamped `minutes_ago` before `now`. The chat's previous
+ * sessions and messages are cleared first, so a re-seed leaves exactly the
+ * fixture. `db` is the eval worker's FERMI_DB binding.
+ */
+export async function seedHistory(db, fixture, now = Date.now()) {
+	const turns = historyTurns(fixture)
+	if (fixture.history === undefined) return 0
+	const host = channelHost(fixture.channel, fixture.chat_id)
+	await db.batch([
+		db
+			.prepare('DELETE FROM messages WHERE session_id IN (SELECT id FROM sessions WHERE host = ?1)')
+			.bind(host),
+		db.prepare('DELETE FROM sessions WHERE host = ?1').bind(host),
+	])
+	for (const turn of turns) {
+		const at = Math.round(now - turn.minutes_ago * 60_000)
+		await logChannelMessage(db, fixture.channel, fixture.chat_id, turn.role, turn.text, at)
+	}
+	return turns.length
 }
 
 /** First JSON-RPC message of a streamable-HTTP MCP response (JSON or SSE body). */
