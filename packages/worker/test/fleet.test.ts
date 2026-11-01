@@ -9,6 +9,7 @@ import {
 } from '../src/lib/fleet-config.ts'
 import {
 	createCloudAgent,
+	fleetRouteHealth,
 	getBox,
 	getCloudAgent,
 	heartbeatBox,
@@ -399,5 +400,32 @@ describe('routeHealth (#47)', () => {
 			consecutive_api_errors: 0,
 			api_error_status: null,
 		})
+	})
+
+	it('scopes health to one account; the default excludes named accounts', () => {
+		const agents = [
+			agent({ ended_at: 30, exit_reason: cap, account: 'alt' }),
+			agent({ ended_at: 20, exit_reason: cap, account: 'alt' }),
+			agent({ ended_at: 10, exit_reason: cap, account: 'alt' }),
+			agent({ ended_at: 5, status: 'done', exit_reason: 'completed', account: null }),
+			agent({ ended_at: 4, exit_reason: cap, account: 'other' }),
+		]
+		expect(routeHealth(agents, 'claude', 'alt').unavailable).toBe(true)
+		expect(routeHealth(agents, 'claude', 'other').consecutive_api_errors).toBe(1)
+		expect(routeHealth(agents, 'claude')).toMatchObject({
+			unavailable: false,
+			consecutive_api_errors: 0,
+		})
+
+		const routes = fleetRouteHealth(agents)
+		expect(Object.keys(routes).sort()).toEqual([
+			'claude',
+			'claude:alt',
+			'claude:other',
+			'codex',
+			'grok',
+		])
+		expect(routes['claude:alt'].unavailable).toBe(true)
+		expect(routes.claude.unavailable).toBe(false)
 	})
 })
