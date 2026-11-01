@@ -1,0 +1,36 @@
+{
+	"channel": "sl",
+	"chat_id": "D0EVALOWNER",
+	"history": [
+		{
+			"role": "user",
+			"text": "Can you call Dr. Example's office and ask for a cleaning slot next week?",
+			"minutes_ago": 45
+		},
+		{
+			"role": "assistant",
+			"text": "I'll call Dr. Example's office at +15555550100 about a cleaning slot next week. Shall I dial now?",
+			"minutes_ago": 44
+		},
+		{ "role": "user", "text": "Yes, go ahead.", "minutes_ago": 43 },
+		{
+			"role": "assistant",
+			"text": "I called Dr. Example's office but the line was busy. Want me to try again later?",
+			"minutes_ago": 25
+		},
+		{
+			"role": "user",
+			"text": "Ok. The booking is under the periwinkle family account.",
+			"minutes_ago": 20
+		}
+	],
+	"tasks": [
+		{
+			"id": "eval-task-redial",
+			"channel": "sl",
+			"sender": "U0EVALOWNER",
+			"chat_id": "D0EVALOWNER",
+			"payload": "Try the dentist again please."
+		}
+	]
+}

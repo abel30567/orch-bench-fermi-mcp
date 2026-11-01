@@ -1,6 +1,8 @@
 // SQL and MCP calls shared by eval-seed.mjs and eval-dump.mjs. No Node imports,
 // so the tests can run the same statements and calls against the test worker.
 
+const CHANNELS = ['tg', 'wa', 'dc', 'sl']
+
 const sql = (value) => {
 	if (value === null || value === undefined) return 'NULL'
 	if (typeof value === 'boolean') return value ? '1' : '0'
@@ -46,7 +48,50 @@ export function seedStatements(fixture, now = Date.now()) {
 			)
 		}
 	}
+	if (fixture.history) out.push(...historyStatements(fixture, now))
 	return out
+}
+
+/**
+ * Conversation history for the scenario's inbound chat, written as
+ * logChannelMessage writes it (src/lib/conversation.ts): one open `chat` session
+ * whose host is `<channel>:<chat_id>`, then one `messages` row per turn, which the
+ * FTS triggers index for session_search. Each turn is stamped `minutes_ago` before
+ * `now`; a `sender` prefixes user turns with `[sender] ` as the group-chat webhooks
+ * do. All messages are cleared first so no other chat's turns leak into
+ * session_search.
+ */
+function historyStatements(fixture, now) {
+	const { channel, chat_id: chatId, sender, history } = fixture
+	if (!CHANNELS.includes(channel) || typeof chatId !== 'string' || !chatId) {
+		throw new Error('fixture.history needs the inbound channel (tg|wa|dc|sl) and chat_id')
+	}
+	const turns = history.map((turn, i) => {
+		const ok =
+			(turn.role === 'user' || turn.role === 'assistant') &&
+			typeof turn.text === 'string' &&
+			typeof turn.minutes_ago === 'number' &&
+			turn.minutes_ago >= 0
+		if (!ok) {
+			throw new Error(
+				`fixture.history[${i}] must be { role: "user"|"assistant", text, minutes_ago >= 0 }`,
+			)
+		}
+		const body = turn.role === 'user' && sender ? `[${sender}] ${turn.text}` : turn.text
+		return { role: turn.role, body, at: now - Math.round(turn.minutes_ago * 60_000) }
+	})
+	const host = `${channel}:${chatId}`
+	const sessionId = crypto.randomUUID()
+	const startedAt = Math.min(now, ...turns.map((t) => t.at))
+	return [
+		'DELETE FROM messages',
+		`DELETE FROM sessions WHERE host = ${sql(host)}`,
+		`INSERT INTO sessions (id, host, mode, started_at) VALUES (${sql(sessionId)}, ${sql(host)}, 'chat', ${startedAt})`,
+		...turns.map(
+			(t) =>
+				`INSERT INTO messages (session_id, role, body, created_at) VALUES (${sql(sessionId)}, ${sql(t.role)}, ${sql(t.body)}, ${t.at})`,
+		),
+	]
 }
 
 /** One query per dumped section, in order. */
@@ -61,6 +106,11 @@ export const DUMP_QUERIES = {
 	skills:
 		'SELECT slug, name, description, keywords, allowed_tools, version, source, decayed_at FROM skills ORDER BY slug',
 	audit: 'SELECT * FROM audit ORDER BY id',
+	// Channel chats only: MCP sessions also log each tool call as messages.
+	history: `SELECT substr(s.host, 1, 2) AS channel, substr(s.host, 4) AS chat_id, m.role,
+		m.body AS text, m.created_at FROM messages m JOIN sessions s ON s.id = m.session_id
+		WHERE substr(s.host, 1, 3) IN (${CHANNELS.map((c) => sql(`${c}:`)).join(', ')})
+		ORDER BY m.created_at, m.id`,
 }
 
 /** Shape rows (one array per DUMP_QUERIES entry, same order) like a fixture. */
