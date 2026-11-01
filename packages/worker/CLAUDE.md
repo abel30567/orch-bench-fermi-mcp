@@ -16,7 +16,9 @@ The main Cloudflare Worker that serves as the MCP server.
 
 Cover a tool with `describeTool('<name>', ...)` from `test/contract/describe-tool.ts`. `tool-coverage.test.ts` fails when a registered tool has no such block, so every new tool needs one.
 
-Outbound HTTP is refused unless a test mocks it with `fetchMock`. The macOS bridge (`http://mac.test`) answers 503 by default; install a fake with `setMacBridge()` from `test/contract/fake-mac.ts`. High-risk tools go through `callApproved()` in `test/contract/approval.ts`.
+Outbound HTTP is refused unless a test mocks it with `fetchMock`. The macOS bridge (`http://mac.test`) answers 503 by default; install a fake with `setMacBridge()` from `test/contract/fake-mac.ts`. High-risk tools go through `callApproved()` in `test/contract/approval.ts`. Approval tokens live in the D1 table `approval_tokens` (not KV); redemption is one atomic conditional `DELETE`.
+
+`test/contract/setup.ts` runs before every contract test: it drops and re-migrates D1 so each test starts clean, refuses unmocked outbound HTTP and installs the `mac.test` interceptor.
 
 ## Subdirectories
 
