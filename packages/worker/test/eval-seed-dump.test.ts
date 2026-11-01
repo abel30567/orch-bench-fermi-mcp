@@ -1,6 +1,7 @@
 import { env } from 'cloudflare:test'
 import { beforeAll, describe, expect, it } from 'vitest'
 import { DUMP_QUERIES, seedStatements, shapeDump } from '../scripts/eval-db.mjs'
+import historyFixture from './fixtures/eval/phone-history.json'
 import fixture from './fixtures/eval/sample.json'
 import { applyMigrations } from './setup-d1.ts'
 
@@ -40,6 +41,7 @@ describe('eval seed/dump', () => {
 			'schedules',
 			'skills',
 			'audit',
+			'history',
 		])
 	})
 
@@ -49,6 +51,24 @@ describe('eval seed/dump', () => {
 		const out = await dump()
 		expect(out.memories).toHaveLength(fixture.memories.length)
 		expect(out.allowlist).toEqual(fixture.allowlist)
+	})
+
+	it('round-trips seeded conversation history', async () => {
+		const now = Date.now()
+		await env.FERMI_DB.batch(
+			seedStatements(historyFixture, now).map((s: string) => env.FERMI_DB.prepare(s)),
+		)
+		const out = await dump()
+		expect(out.history).toEqual(
+			historyFixture.history.map(({ role, text, minutes_ago }) => ({
+				channel: historyFixture.channel,
+				chat_id: historyFixture.chat_id,
+				role,
+				text,
+				created_at: now - minutes_ago * 60_000,
+			})),
+		)
+		expect(out.tasks.map((t: { id: string }) => t.id)).toEqual(['eval-task-redial'])
 	})
 
 	it('escapes quotes in values', async () => {
