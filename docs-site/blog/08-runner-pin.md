@@ -13,16 +13,18 @@ Nothing went wrong. That's not reassurance — it's the shape of supply-chain ri
 The runner is now pinned. The operator sets a specific commit ref *and* its sha256 into `fleet:config`; boxes fetch that exact ref and **verify the hash before executing a byte**:
 
 ```
-fleetctl pin-runner   # writes runner_ref + runner_sha256
+fleetctl pin-runner   # writes runner_ref + runner_sha256 (+ runner_files manifest)
 ```
 
 Three properties, all fail-closed:
 
 1. **Launch refuses while unpinned.** No pin, no fleet. You cannot accidentally run the unprotected path; the safe path is the only path.
 2. **Hash mismatch aborts.** If the fetched file doesn't match the pin — tampered, truncated, wrong ref — the box runs *nothing* and reports the failure. A wrong runner is a non-event, not a compromise.
-3. **The tamper case is a test.** `test/shell/boot-pin-harness.sh` serves a tampered file and asserts the boot fails closed with nothing installed. The guarantee is executable, not aspirational.
+3. **The tamper case is a test.** `packages/worker/test/shell/boot-pin-harness.sh` serves tampered and missing files and asserts the boot fails closed with nothing installed. The guarantee is executable, not aspirational.
 
 The retry from [the 100-agent run](/blog/05-hundred-agents) lives here too: `curl --retry 4 --retry-delay 3 --retry-all-errors`, so a CDN hiccup is a slow boot, not a dead box — availability and integrity in the same few lines.
+
+The pin is a manifest, not a single hash: `{ ref, files: { path: sha256 } }`, so the runner can import shared daemon modules (`harness/`, `lib/`). Every file is fetched into the same relative layout and every hash is verified before anything is installed; altering or omitting any one file refuses the boot. `POST /admin/fleet/pin-runner` takes `{ ref }` (legacy: box-runner.mjs only), `{ ref, files: [paths] }` (the worker hashes each) or `{ ref, files: { path: sha256 } }` (each fetched file must match). The manifest always includes `box-runner.mjs`, and paths must be relative with no `..`.
 
 ## The lesson
 
