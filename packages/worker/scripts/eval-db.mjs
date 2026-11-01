@@ -61,6 +61,9 @@ export const DUMP_QUERIES = {
 	skills:
 		'SELECT slug, name, description, keywords, allowed_tools, version, source, decayed_at FROM skills ORDER BY slug',
 	audit: 'SELECT * FROM audit ORDER BY id',
+	// Channel chat transcripts (hosts `tg:`/`wa:`/`dc:`/`sl:` + chat id), not MCP tool logs.
+	history: `SELECT s.host, m.role, m.body, m.created_at FROM messages m JOIN sessions s ON m.session_id = s.id
+		WHERE substr(s.host, 1, 3) IN ('tg:', 'wa:', 'dc:', 'sl:') ORDER BY s.host, m.created_at, m.id`,
 }
 
 /** Shape rows (one array per DUMP_QUERIES entry, same order) like a fixture. */
@@ -69,6 +72,13 @@ export function shapeDump(rowSets) {
 	const dump = Object.fromEntries(names.map((name, i) => [name, rowSets[i] ?? []]))
 	dump.profile = Object.fromEntries(dump.profile.map((r) => [r.name, r.body]))
 	dump.memories = dump.memories.map((m) => ({ ...m, pinned: m.pinned === 1 }))
+	dump.history = dump.history.map(({ host, role, body, created_at }) => ({
+		channel: host.slice(0, 2),
+		chat_id: host.slice(3),
+		role,
+		text: body,
+		created_at,
+	}))
 	return dump
 }
 
