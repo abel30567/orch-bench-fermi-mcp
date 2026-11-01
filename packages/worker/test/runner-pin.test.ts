@@ -3,7 +3,12 @@ import { afterEach, beforeAll, describe, expect, it } from 'vitest'
 import { pinRunner } from '../src/lib/fleet-config.ts'
 import type { CloudAgentRow } from '../src/lib/fleet-store.ts'
 import { bootstrapUserData, dispatchProvision } from '../src/lib/provisioner.ts'
-import { runnerFetchScript, runnerPinFromConfig, runnerUrl } from '../src/lib/runner-pin.ts'
+import {
+	parseRunnerFiles,
+	runnerFetchScript,
+	runnerPinFromConfig,
+	runnerUrl,
+} from '../src/lib/runner-pin.ts'
 import { setupFleetSchema } from './setup-d1.ts'
 
 const SHA = 'b'.repeat(64)
@@ -133,14 +138,49 @@ describe('runner pin manifest (pr-55)', () => {
 		const script = runnerFetchScript(pin)
 		for (const [path, sha] of Object.entries(MANIFEST)) {
 			expect(script).toContain(runnerUrl('v1', path))
-			expect(script).toContain(`echo '${sha}  /opt/fermi/${path}.new' | sha256sum -c -`)
+			expect(script).toContain(`echo '${sha}  /opt/fermi/.pin-staging/${path}' | sha256sum -c -`)
 		}
-		expect(script).toContain("mkdir -p '/opt/fermi/harness' '/opt/fermi/lib'")
+		expect(script).toContain(
+			"mkdir -p '/opt/fermi/.pin-staging' '/opt/fermi/.pin-staging/harness' '/opt/fermi/harness' '/opt/fermi/.pin-staging/lib' '/opt/fermi/lib'",
+		)
 		const lines = script.split('\n')
 		const lastVerify = lines.findLastIndex((l) => l.includes('sha256sum -c'))
 		const firstMv = lines.findIndex((l) => l.startsWith('mv '))
 		expect(firstMv).toBeGreaterThan(lastVerify)
-		expect(lines.at(-1)).toBe("mv '/opt/fermi/box-runner.mjs.new' '/opt/fermi/box-runner.mjs'")
+		const mvs = lines.filter((l) => l.startsWith('mv '))
+		expect(mvs.at(-1)).toBe(
+			"mv -f '/opt/fermi/.pin-staging/box-runner.mjs' '/opt/fermi/box-runner.mjs'",
+		)
+		expect(lines.at(-1)).toBe("rm -rf '/opt/fermi/.pin-staging'")
+	})
+
+	it('runnerFetchScript: a path X.new never shares a staging file with X (F1)', () => {
+		const files = { 'box-runner.mjs': H('1'), 'box-runner.mjs.new': H('2') }
+		const script = runnerFetchScript({ ref: 'v1', files })
+		// Each verified file is moved from its own staged copy to its own path;
+		// no staged path is ever the target of another file's mv.
+		const mvs = script
+			.split('\n')
+			.filter((l) => l.startsWith('mv '))
+			.map((l) => l.match(/'([^']+)' '([^']+)'/)?.slice(1) ?? [])
+		expect(mvs).toEqual([
+			['/opt/fermi/.pin-staging/box-runner.mjs.new', '/opt/fermi/box-runner.mjs.new'],
+			['/opt/fermi/.pin-staging/box-runner.mjs', '/opt/fermi/box-runner.mjs'],
+		])
+		const sources = new Set(mvs.map(([src]) => src))
+		for (const [, dst] of mvs) expect(sources.has(dst)).toBe(false)
+	})
+
+	it('parseRunnerFiles rejects a path that is also a directory of another path (F2)', () => {
+		expect(
+			parseRunnerFiles({ 'box-runner.mjs': H('1'), lib: H('2'), 'lib/x.mjs': H('3') }),
+		).toBeNull()
+		expect(
+			parseRunnerFiles({ 'box-runner.mjs': H('1'), 'a/b': H('2'), 'a/b/c/d.mjs': H('3') }),
+		).toBeNull()
+		expect(
+			parseRunnerFiles({ 'box-runner.mjs': H('1'), lib: H('2'), 'libx/y.mjs': H('3') }),
+		).not.toBeNull()
 	})
 
 	it('runnerFetchScript throws on an invalid manifest', () => {

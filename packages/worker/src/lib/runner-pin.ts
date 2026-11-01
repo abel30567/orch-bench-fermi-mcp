@@ -27,6 +27,8 @@ const REF_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/
 const SHA256_RE = /^[0-9a-f]{64}$/
 const SEGMENT_RE = /^[A-Za-z0-9_][A-Za-z0-9._-]{0,127}$/
 const MAX_FILES = 64
+/** Staging dir under the install dir; hidden, so no manifest path can name it. */
+const STAGING_DIR = '.pin-staging'
 
 /** Ref safe to embed in a URL and a single-quoted shell string. */
 export function isSafeRef(ref: unknown): ref is string {
@@ -55,6 +57,14 @@ export function parseRunnerFiles(files: unknown): Record<string, string> | null 
 		out[path] = sha
 	}
 	if (!(RUNNER_ENTRY in out)) return null
+	// A path that is also a directory of another path (`lib` + `lib/x.mjs`)
+	// can never be installed; reject it up front instead of failing at boot.
+	for (const path of Object.keys(out)) {
+		const segs = path.split('/')
+		for (let i = 1; i < segs.length; i++) {
+			if (segs.slice(0, i).join('/') in out) return null
+		}
+	}
 	return out
 }
 
@@ -107,18 +117,23 @@ export function runnerFetchScript(
 		a === RUNNER_ENTRY ? 1 : b === RUNNER_ENTRY ? -1 : a < b ? -1 : a > b ? 1 : 0,
 	)
 	const dirs = [...new Set(paths.map((p) => p.split('/').slice(0, -1).join('/')).filter(Boolean))]
-	const lines: string[] = []
-	if (dirs.length > 0) lines.push(`mkdir -p ${dirs.map((d) => `'${destDir}/${d}'`).join(' ')}`)
+	// Downloads are staged under a hidden dir. Manifest paths can never contain
+	// a hidden segment, so a staged file can never collide with (and overwrite)
+	// another file's staged or installed copy — e.g. `X` vs `X.new`.
+	const stage = `${destDir}/${STAGING_DIR}`
+	const lines: string[] = [`rm -rf '${stage}'`]
+	lines.push(`mkdir -p '${stage}'${dirs.map((d) => ` '${stage}/${d}' '${destDir}/${d}'`).join('')}`)
 	// --retry: large fleets boot in bursts and GitHub's raw CDN throttles them
 	// (2 of 100 boxes died to this on 2026-09-07). Retries cover transient
 	// throttling; the sha256 gate still catches anything short or tampered.
 	for (const p of paths) {
-		const dest = `${destDir}/${p}`
+		const staged = `${stage}/${p}`
 		lines.push(
-			`curl -fsSL --retry 4 --retry-delay 3 --retry-all-errors '${urlFor(p)}' -o '${dest}.new'`,
-			`echo '${files[p]}  ${dest}.new' | sha256sum -c - >/dev/null`,
+			`curl -fsSL --retry 4 --retry-delay 3 --retry-all-errors '${urlFor(p)}' -o '${staged}'`,
+			`echo '${files[p]}  ${staged}' | sha256sum -c - >/dev/null`,
 		)
 	}
-	for (const p of paths) lines.push(`mv '${destDir}/${p}.new' '${destDir}/${p}'`)
+	for (const p of paths) lines.push(`mv -f '${stage}/${p}' '${destDir}/${p}'`)
+	lines.push(`rm -rf '${stage}'`)
 	return lines.join('\n')
 }

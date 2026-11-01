@@ -51,7 +51,7 @@ expect_refuse() { # $1 label, $2 fragment, $3 dest
 	rm -rf "$3"; mkdir -p "$3"
 	if bash -euo pipefail "$2" 2>/dev/null; then
 		echo "FAIL: $1 accepted (exit 0)"; fail=1
-	elif [ -n "$(find "$3" -type f ! -name '*.new' | head -1)" ]; then
+	elif [ -n "$(find "$3" -type f ! -path '*/.pin-staging/*' | head -1)" ]; then
 		echo "FAIL: $1 installed files despite non-zero exit"; fail=1
 	else
 		echo "ok: $1 refused, nothing installed"
@@ -98,7 +98,8 @@ done
 # Case D: invalid manifests are rejected before any fragment is emitted.
 for bad in \
 	'{"runner_ref":"testref","runner_files":{"lib/util.mjs":"'"$(printf 'a%.0s' {1..64})"'"}}' \
-	'{"runner_ref":"testref","runner_files":{"box-runner.mjs":"'"$(printf 'a%.0s' {1..64})"'","../evil.mjs":"'"$(printf 'a%.0s' {1..64})"'"}}'; do
+	'{"runner_ref":"testref","runner_files":{"box-runner.mjs":"'"$(printf 'a%.0s' {1..64})"'","../evil.mjs":"'"$(printf 'a%.0s' {1..64})"'"}}' \
+	'{"runner_ref":"testref","runner_files":{"box-runner.mjs":"'"$(printf 'a%.0s' {1..64})"'","lib":"'"$(printf 'a%.0s' {1..64})"'","lib/x.mjs":"'"$(printf 'a%.0s' {1..64})"'"}}'; do
 	if CONFIG_JSON="$bad" node --experimental-strip-types --no-warnings -e "
 import('./src/lib/runner-pin.ts').then(m => process.exit(m.runnerPinFromConfig(JSON.parse(process.env.CONFIG_JSON)) ? 0 : 1))"; then
 		echo "FAIL: invalid manifest accepted: $bad"; fail=1
@@ -106,6 +107,22 @@ import('./src/lib/runner-pin.ts').then(m => process.exit(m.runnerPinFromConfig(J
 		echo "ok: invalid manifest rejected"
 	fi
 done
+
+# Case G (F1): a manifest with both X and X.new must install each file with
+# its own pinned content; staging must never let one overwrite the other.
+serve_pristine
+echo 'OTHER FILE' > "$SRC/box-runner.mjs.new"
+COLLIDE="{\"runner_ref\":\"testref\",\"runner_files\":{\"box-runner.mjs\":\"$(sha_of "$SRC/box-runner.mjs")\",\"box-runner.mjs.new\":\"$(sha_of "$SRC/box-runner.mjs.new")\"}}"
+CDEST="$WORK/collide"
+gen_fragment "$COLLIDE" "$WORK/collide.sh" "$CDEST"
+rm -rf "$CDEST"; mkdir -p "$CDEST"
+if bash -euo pipefail "$WORK/collide.sh" \
+	&& cmp -s "$SRC/box-runner.mjs" "$CDEST/box-runner.mjs" \
+	&& cmp -s "$SRC/box-runner.mjs.new" "$CDEST/box-runner.mjs.new"; then
+	echo "ok: X and X.new each installed with their own pinned content"
+else
+	echo "FAIL: X / X.new staging collision installed the wrong content"; fail=1
+fi
 
 # ---- Legacy single-file pin -------------------------------------------------
 serve_pristine
