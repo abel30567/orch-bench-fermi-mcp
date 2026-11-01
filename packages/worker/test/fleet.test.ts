@@ -208,6 +208,7 @@ describe('agent stall detection for cloud_agent_followup (#42)', () => {
 			instance_type: null,
 			last_working_event_at: null,
 			restart_count: 0,
+			account: null,
 			last_heartbeat_at: NOW,
 			...p,
 		}) as CloudAgentView
@@ -398,6 +399,27 @@ describe('routeHealth (#47)', () => {
 			unavailable: false,
 			consecutive_api_errors: 0,
 			api_error_status: null,
+		})
+	})
+
+	it('scopes claude health per account; default excludes alternate accounts', () => {
+		const agents = [
+			agent({ ended_at: 30, exit_reason: cap, account: 'alt' }),
+			agent({ ended_at: 20, exit_reason: cap, account: 'alt' }),
+			agent({ ended_at: 10, exit_reason: cap, account: 'alt' }),
+			agent({ ended_at: 25, exit_reason: 'completed', status: 'done' }),
+			agent({ ended_at: 5, exit_reason: cap }),
+		]
+		expect(routeHealth(agents, 'claude')).toMatchObject({
+			unavailable: false,
+			consecutive_api_errors: 0,
+		})
+		expect(routeHealth(agents, 'claude')).not.toHaveProperty('account')
+		expect(routeHealth(agents, 'claude', 'alt')).toMatchObject({
+			route: 'claude',
+			account: 'alt',
+			unavailable: true,
+			consecutive_api_errors: 3,
 		})
 	})
 })

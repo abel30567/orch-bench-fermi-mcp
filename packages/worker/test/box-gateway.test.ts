@@ -45,7 +45,7 @@ function req(path: string, body: unknown = {}, token = `box-1.${SECRET}`): Reque
 	})
 }
 
-async function seedBoxAndAgent() {
+async function seedBoxAndAgent(account?: string) {
 	await registerBox(env.FERMI_DB, {
 		boxId: 'box-1',
 		provider: 'aws',
@@ -68,6 +68,7 @@ async function seedBoxAndAgent() {
 		prompt: 'do it',
 		proofContract: 'show it',
 		taskId: task.id,
+		account,
 	})
 	return task
 }
@@ -282,6 +283,27 @@ describe('box gateway', () => {
 			route: 'claude',
 			secrets: { CLAUDE_CODE_OAUTH_TOKEN: 'sk-ant-oat-test' },
 		})
+	})
+
+	it('serves an alternate account token under the standard name', async () => {
+		await setupSecretsSchema()
+		await clearSecrets()
+		await putSecret({ name: 'CLAUDE_CODE_OAUTH_TOKEN', scope: 'app', value: 'default-oat' }, env)
+		await seedBoxAndAgent('alt_two')
+
+		const missing = await handleBoxInferenceAuth(req('/box/inference-auth'), env)
+		expect(missing.status).toBe(409)
+		expect(await missing.json()).toMatchObject({ missing: ['CLAUDE_CODE_OAUTH_TOKEN_ALT_TWO'] })
+
+		await putSecret(
+			{ name: 'CLAUDE_CODE_OAUTH_TOKEN_ALT_TWO', scope: 'app', value: 'alt-oat' },
+			env,
+		)
+		const ok = await handleBoxInferenceAuth(req('/box/inference-auth'), env)
+		expect(ok.status).toBe(200)
+		const body = (await ok.json()) as { account: string; secrets: Record<string, string> }
+		expect(body.account).toBe('alt_two')
+		expect(body.secrets).toEqual({ CLAUDE_CODE_OAUTH_TOKEN: 'alt-oat' })
 	})
 
 	it('serves GITHUB_TOKEN only to missions whose task payload names a repo', async () => {

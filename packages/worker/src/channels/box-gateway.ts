@@ -1,6 +1,7 @@
 import { accruedCostUsd } from '../lib/fleet-config.ts'
 import type { BoxRow } from '../lib/fleet-store.ts'
 import {
+	accountTokenSecretName,
 	getBox,
 	getCloudAgent,
 	heartbeatBox,
@@ -238,12 +239,20 @@ export async function handleBoxInferenceAuth(request: Request, env: Env): Promis
 		} catch {}
 	}
 
+	// Alternate Claude account: read CLAUDE_CODE_OAUTH_TOKEN_<ACCOUNT> but serve
+	// it under the standard name so the box runner needs no account awareness.
+	const sourceName = (name: string): string =>
+		agent.route === 'claude' && agent.account && name === 'CLAUDE_CODE_OAUTH_TOKEN'
+			? accountTokenSecretName(agent.account)
+			: name
+
 	const values: Record<string, string> = {}
 	const missing: string[] = []
 	for (const name of names) {
-		const secret = await getSecret(name, 'app', '', env)
+		const source = sourceName(name)
+		const secret = await getSecret(source, 'app', '', env)
 		if (secret) values[name] = secret.value
-		else missing.push(name)
+		else missing.push(source)
 	}
 	if (missing.length > 0) {
 		return Response.json(
@@ -251,7 +260,12 @@ export async function handleBoxInferenceAuth(request: Request, env: Env): Promis
 			{ status: 409 },
 		)
 	}
-	return Response.json({ ok: true, route: agent.route, secrets: values })
+	return Response.json({
+		ok: true,
+		route: agent.route,
+		...(agent.account ? { account: agent.account } : {}),
+		secrets: values,
+	})
 }
 
 /** Writeback for refreshed CLIProxyAPI OAuth bundles (rotation-safe fleet). */
