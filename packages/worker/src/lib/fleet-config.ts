@@ -1,3 +1,5 @@
+import { MAX_RUNNER_FILES, RUNNER_ENTRY, isSafeRunnerPath, runnerUrl } from './runner-pin.ts'
+
 export interface FleetConfig {
 	region: string
 	monthly_budget_usd: number
@@ -11,6 +13,8 @@ export interface FleetConfig {
 	/** Supply-chain pin for the box-runner boot download (#34); launch refuses when unset. */
 	runner_ref: string | null
 	runner_sha256: string | null
+	/** Multi-file manifest `{path: sha256}` (includes box-runner.mjs); null = legacy single-file pin. */
+	runner_files: Record<string, string> | null
 	default_ttl_seconds: number
 	max_ttl_seconds: number
 	heartbeat_stale_ms: number
@@ -28,6 +32,7 @@ const DEFAULTS: FleetConfig = {
 	mcp_base_url: null,
 	runner_ref: null,
 	runner_sha256: null,
+	runner_files: null,
 	default_ttl_seconds: 3600,
 	max_ttl_seconds: 4 * 3600,
 	heartbeat_stale_ms: 10 * 60_000,
@@ -148,6 +153,88 @@ export async function updateFleetConfig(
 	} catch {}
 	await env.FERMI_KV.put('fleet:config', JSON.stringify({ ...stored, ...verdict.patch }))
 	return { ok: true, config: verdict.config }
+}
+
+async function sha256OfBytes(bytes: ArrayBuffer): Promise<string> {
+	const digest = await crypto.subtle.digest('SHA-256', bytes)
+	return [...new Uint8Array(digest)].map((x) => x.toString(16).padStart(2, '0')).join('')
+}
+
+/**
+ * POST /admin/fleet/pin-runner: fetch every manifest file at `ref`, hash it,
+ * and store the pin. `files` is optional: omitted pins box-runner.mjs alone
+ * (legacy); a path array pins those paths; a `{path: sha256}` map pins them
+ * and refuses (409) if any fetched file does not match the expected hash.
+ * box-runner.mjs is always part of the manifest.
+ */
+export async function pinRunner(
+	env: Env,
+	body: { ref?: unknown; files?: unknown },
+): Promise<Response> {
+	const bad = (error: string) => Response.json({ ok: false, error }, { status: 400 })
+	const ref = body?.ref
+	if (typeof ref !== 'string' || !/^[0-9a-f]{7,40}$/.test(ref))
+		return bad('ref must be a commit sha')
+
+	const files = body.files
+	const expected = new Map<string, string | null>([[RUNNER_ENTRY, null]])
+	if (Array.isArray(files)) {
+		for (const path of files) {
+			if (!isSafeRunnerPath(path)) return bad('files must be safe relative paths')
+			expected.set(path, null)
+		}
+	} else if (files && typeof files === 'object') {
+		for (const [path, sha] of Object.entries(files as Record<string, unknown>)) {
+			if (!isSafeRunnerPath(path)) return bad('files must be safe relative paths')
+			if (typeof sha !== 'string' || !/^[0-9a-f]{64}$/.test(sha))
+				return bad(`files["${path}"] must be a sha256 hex digest`)
+			expected.set(path, sha)
+		}
+	} else if (files !== undefined && files !== null) {
+		return bad('files must be an array of paths or a {path: sha256} map')
+	}
+	if (expected.size > MAX_RUNNER_FILES) return bad(`files exceeds ${MAX_RUNNER_FILES} entries`)
+	const paths = [...expected.keys()]
+	if (paths.some((p) => paths.some((other) => other.startsWith(`${p}/`))))
+		return bad('files must not contain a path that is also a directory')
+
+	const manifest: Record<string, string> = {}
+	let bytes = 0
+	for (const path of paths.sort()) {
+		const res = await fetch(runnerUrl(ref, path))
+		if (!res.ok)
+			return Response.json({ ok: false, error: `fetch_${res.status}`, path }, { status: 502 })
+		const buf = await res.arrayBuffer()
+		const sha256 = await sha256OfBytes(buf)
+		const want = expected.get(path)
+		if (want && want !== sha256)
+			return Response.json(
+				{ ok: false, error: 'sha256_mismatch', path, expected: want, actual: sha256 },
+				{ status: 409 },
+			)
+		manifest[path] = sha256
+		bytes += buf.byteLength
+	}
+
+	const raw = await env.FERMI_KV.get('fleet:config')
+	let stored: Record<string, unknown> = {}
+	try {
+		stored = raw ? JSON.parse(raw) : {}
+	} catch {}
+	// A legacy (single-file) pin clears any previous manifest; runner_sha256 is
+	// always box-runner.mjs's hash so older readers keep a consistent view.
+	const legacy = files === undefined || files === null
+	const sha256 = manifest[RUNNER_ENTRY]
+	await env.FERMI_KV.put(
+		'fleet:config',
+		JSON.stringify({
+			...stored,
+			runner_ref: ref,
+			runner_sha256: sha256,
+			runner_files: legacy ? undefined : manifest,
+		}),
+	)
+	return Response.json({ ok: true, ref, sha256, files: manifest, bytes })
 }
 
 export function hourlyRate(instanceType: string): number {
