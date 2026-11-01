@@ -30,6 +30,7 @@ stateDiagram-v2
   "prompt": "Add a gradient() function to testbed with tests",
   "proof_contract": "{\"kind\":\"artifact\",\"name\":\"out.diff\",\"min_bytes\":1}",
   "route": "claude",          // or "codex" | "grok"
+  "account": "alt",            // optional, claude only: uses CLAUDE_CODE_OAUTH_TOKEN_ALT
   "budget_usd": 0.25,          // soft cap, EC2 wall-clock only
   "ttl_seconds": 3600,
   "skills": ["github-api"],    // Fermi skills preloaded into the box context

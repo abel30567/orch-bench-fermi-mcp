@@ -7,8 +7,10 @@ import {
 	updateFleetConfig,
 	validateFleetConfigPatch,
 } from '../src/lib/fleet-config.ts'
+import { launchCloudAgent } from '../src/lib/fleet-launch.ts'
 import {
 	createCloudAgent,
+	fleetRouteHealth,
 	getBox,
 	getCloudAgent,
 	heartbeatBox,
@@ -19,6 +21,7 @@ import {
 	updateCloudAgent,
 } from '../src/lib/fleet-store.ts'
 import type { CloudAgentRow, CloudAgentView } from '../src/lib/fleet-store.ts'
+import { putSecret } from '../src/lib/secrets-store.ts'
 import {
 	claimTasks,
 	completeTask,
@@ -31,9 +34,11 @@ import { agentStall, cloudAgentLaunchSchema } from '../src/mcp/tools/cloud-agent
 import {
 	clearAudit,
 	clearFleet,
+	clearSecrets,
 	clearTasks,
 	setupAuditSchema,
 	setupFleetSchema,
+	setupSecretsSchema,
 	setupSkillsSchema,
 	setupTasksSchema,
 } from './setup-d1.ts'
@@ -399,5 +404,94 @@ describe('routeHealth (#47)', () => {
 			consecutive_api_errors: 0,
 			api_error_status: null,
 		})
+	})
+
+	it('scopes health per account: a capped account does not mark the others down', () => {
+		const agents = [
+			agent({ account: 'alt', ended_at: 30, exit_reason: cap }),
+			agent({ account: 'alt', ended_at: 20, exit_reason: cap }),
+			agent({ account: 'alt', ended_at: 10, exit_reason: cap }),
+			agent({ account: null, ended_at: 5, status: 'done', exit_reason: 'completed' }),
+			agent({ ended_at: 4, exit_reason: cap }), // row without the column set
+		]
+		expect(routeHealth(agents, 'claude', 'alt')).toMatchObject({
+			unavailable: true,
+			consecutive_api_errors: 3,
+		})
+		expect(routeHealth(agents, 'claude')).toMatchObject({
+			unavailable: false,
+			consecutive_api_errors: 0,
+		})
+		expect(routeHealth(agents, 'claude', 'other').consecutive_api_errors).toBe(0)
+
+		const routes = fleetRouteHealth(agents)
+		expect(Object.keys(routes).sort()).toEqual(['claude', 'claude:alt', 'codex', 'grok'])
+		expect(routes.claude.unavailable).toBe(false)
+		expect(routes['claude:alt'].unavailable).toBe(true)
+	})
+})
+
+describe('launchCloudAgent account', () => {
+	const launch = {
+		prompt: 'build feature X end to end',
+		proof_contract: '{"kind":"artifact","name":"out.diff","min_bytes":1}',
+	}
+
+	beforeAll(async () => {
+		await setupFleetSchema()
+		await setupSecretsSchema()
+		await setupTasksSchema()
+	})
+
+	beforeEach(async () => {
+		await clearFleet()
+		await clearSecrets()
+		await clearTasks()
+	})
+
+	const agentCount = async () => (await listCloudAgents(env.FERMI_DB, { limit: 100 })).length
+
+	it('fails fast, leaving no agent behind, on a bad account', async () => {
+		expect(await launchCloudAgent(env, { ...launch, route: 'codex', account: 'alt' })).toEqual({
+			ok: false,
+			error: 'account_requires_claude_route',
+		})
+		for (const account of [
+			'',
+			'Alt',
+			'1alt',
+			'a-b',
+			'a'.repeat(33),
+			['alt'] as unknown as string,
+		]) {
+			expect(await launchCloudAgent(env, { ...launch, account })).toEqual({
+				ok: false,
+				error: 'invalid_account',
+			})
+		}
+		expect(await launchCloudAgent(env, { ...launch, account: 'alt' })).toMatchObject({
+			ok: false,
+			error: 'account_token_not_configured',
+		})
+		expect(await agentCount()).toBe(0)
+	})
+
+	it('stores the account on the agent row, and null without one', async () => {
+		await putSecret({ name: 'CLAUDE_CODE_OAUTH_TOKEN_ALT', scope: 'app', value: 'oat' }, env)
+		await registerBox(env.FERMI_DB, { boxId: 'box-private', provider: 'private' })
+
+		const alt = await launchCloudAgent(env, { ...launch, box_id: 'box-private', account: 'alt' })
+		if (!alt.ok) throw new Error(alt.error)
+		expect((await getCloudAgent(env.FERMI_DB, alt.agent_id))?.account).toBe('alt')
+
+		const plain = await launchCloudAgent(env, { ...launch, box_id: 'box-private' })
+		if (!plain.ok) throw new Error(plain.error)
+		expect((await getCloudAgent(env.FERMI_DB, plain.agent_id))?.account).toBeNull()
+	})
+
+	it('validates the id in the MCP schema too', () => {
+		const schema = z.object(cloudAgentLaunchSchema)
+		expect(schema.safeParse({ ...launch, account: 'alt_2' }).success).toBe(true)
+		expect(schema.safeParse({ ...launch, account: 'Alt' }).success).toBe(false)
 	})
 })

@@ -14,6 +14,7 @@ Every tier of Fermi is a trust decision. This page enumerates exactly what each 
 | `MACOS_MCP_TOKEN` | Worker + MacOSMCP | Worker secret; Mac config | Tier 3 `mac_*` tools | remote shell on your Mac (approval-gated at the tool layer) |
 | AWS keys (EC2 scope) | Worker | Fermi secrets store, host-allowlisted to `*.amazonaws.com` | Tier 4 launch/terminate | EC2 spend + instances in one region |
 | `CLAUDE_CODE_OAUTH_TOKEN` | Worker → each box | Fermi secrets store; injected into box env at provision | box inference on your subscription | your Claude subscription usage |
+| `CLAUDE_CODE_OAUTH_TOKEN_<ACCOUNT>` | Worker → each box launched with `account` | Fermi secrets store; served as `CLAUDE_CODE_OAUTH_TOKEN` | box inference on an alternate subscription | that subscription's usage |
 | `GITHUB_TOKEN` | Worker → boxes needing repo work | Fermi secrets store | agent pushes/PRs | your repos, to the token's scope |
 | Twilio Account SID + Auth Token | Worker | Fermi secrets store | [phone calls](/components/phone-calls): dialing, and verifying Twilio's callbacks | calls and spend on your Twilio account, from your caller ID; forged call-status callbacks |
 | `OPENAI_API_KEY` | Worker | Fermi secrets store | the voice model on phone calls | OpenAI API spend |
