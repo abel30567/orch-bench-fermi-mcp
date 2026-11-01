@@ -284,6 +284,40 @@ describe('box gateway', () => {
 		})
 	})
 
+	it('serves an account token under the standard name, never falling back to the default', async () => {
+		await setupSecretsSchema()
+		await clearSecrets()
+		await putSecret({ name: 'CLAUDE_CODE_OAUTH_TOKEN', scope: 'app', value: 'default-oat' }, env)
+		await registerBox(env.FERMI_DB, {
+			boxId: 'box-1',
+			meta: { agent_id: AGENT_ID, token_hash: await sha256Hex(SECRET) },
+		})
+		await createCloudAgent(env.FERMI_DB, {
+			id: AGENT_ID,
+			queue: QUEUE,
+			prompt: 'p',
+			proofContract: 'c',
+			boxId: 'box-1',
+			account: 'work_2',
+		})
+
+		const missing = await handleBoxInferenceAuth(req('/box/inference-auth'), env)
+		expect(missing.status).toBe(409)
+		expect(await missing.json()).toMatchObject({
+			missing: ['CLAUDE_CODE_OAUTH_TOKEN_WORK_2'],
+		})
+
+		await putSecret(
+			{ name: 'CLAUDE_CODE_OAUTH_TOKEN_WORK_2', scope: 'app', value: 'work-oat' },
+			env,
+		)
+		const ok = await handleBoxInferenceAuth(req('/box/inference-auth'), env)
+		expect(ok.status).toBe(200)
+		expect(((await ok.json()) as { secrets: unknown }).secrets).toEqual({
+			CLAUDE_CODE_OAUTH_TOKEN: 'work-oat',
+		})
+	})
+
 	it('serves GITHUB_TOKEN only to missions whose task payload names a repo', async () => {
 		await setupSecretsSchema()
 		await clearSecrets()
