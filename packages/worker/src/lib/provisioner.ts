@@ -3,7 +3,7 @@ import { getAwsCreds, runInstance, terminateInstances } from './aws-ec2.ts'
 import { getFleetConfig, monthSpendUsd } from './fleet-config.ts'
 import type { CloudAgentRow } from './fleet-store.ts'
 import { getBox, registerBox, updateBox, updateCloudAgent } from './fleet-store.ts'
-import { type RunnerPin, runnerFetchScript } from './runner-pin.ts'
+import { type RunnerPin, runnerFetchScript, runnerPinFromConfig } from './runner-pin.ts'
 
 export interface ProvisionOutcome {
 	dispatched: boolean
@@ -31,7 +31,7 @@ export function bootstrapUserData(opts: {
 		'set -euo pipefail',
 		`shutdown -h +${shutdownMinutes}`,
 		'mkdir -p /etc/fermi /opt/fermi',
-		// Fetch+verify the pinned runner BEFORE the box token exists on disk:
+		// Fetch+verify every pinned runner file BEFORE the box token exists on disk:
 		// a tampered download aborts here (set -e), credentials never land, the
 		// box never heartbeats, and the provision-grace reaper reclaims it.
 		runnerFetchScript(opts.runnerPin),
@@ -62,9 +62,9 @@ export async function dispatchProvision(env: Env, agent: CloudAgentRow): Promise
 
 	// Supply-chain gate (#34): never boot a box without a pinned, hash-verified
 	// runner. Set via POST /admin/fleet/pin-runner.
-	if (!config.runner_ref || !config.runner_sha256) {
-		return { dispatched: false, reason: 'runner_pin_unset' }
-	}
+	// A malformed manifest is treated as unset: fail closed, never half-pinned.
+	const runnerPin = runnerPinFromConfig(config)
+	if (!runnerPin) return { dispatched: false, reason: 'runner_pin_unset' }
 
 	if (!config.default_env) return { dispatched: false, reason: 'no_environment_configured' }
 	const envRaw = await env.FERMI_KV.get(`cloudenv:${config.default_env}`)
@@ -108,7 +108,7 @@ export async function dispatchProvision(env: Env, agent: CloudAgentRow): Promise
 			mcpBaseUrl: config.mcp_base_url ?? null,
 			claudeModel: agent.route === 'claude' ? config.claude_model : null,
 			boxToken: `${boxId}.${boxSecret}`,
-			runnerPin: { ref: config.runner_ref, sha256: config.runner_sha256 },
+			runnerPin,
 		}),
 		tagName: `fermi-${boxId}`,
 	})
