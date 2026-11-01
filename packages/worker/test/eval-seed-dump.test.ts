@@ -40,6 +40,7 @@ describe('eval seed/dump', () => {
 			'schedules',
 			'skills',
 			'audit',
+			'history',
 		])
 	})
 
