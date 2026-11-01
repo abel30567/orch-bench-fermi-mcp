@@ -58,6 +58,48 @@ export type GuardrailResult<R> =
 			details?: Record<string, unknown>
 	  }
 
+/** Approval tokens live this long after minting (the former KV expirationTtl). */
+export const APPROVAL_TOKEN_TTL_MS = 300_000
+
+/** Mint a single-use token bound to one tool and args hash; sweeps expired tokens. */
+export async function mintApprovalToken(
+	db: D1Database,
+	tool: string,
+	argsHash: string,
+): Promise<string> {
+	const token = crypto.randomUUID()
+	const now = Date.now()
+	await db.batch([
+		db.prepare('DELETE FROM approval_tokens WHERE expires_at <= ?1').bind(now),
+		db
+			.prepare(
+				'INSERT INTO approval_tokens (token, tool, args_hash, expires_at) VALUES (?1, ?2, ?3, ?4)',
+			)
+			.bind(token, tool, argsHash, now + APPROVAL_TOKEN_TTL_MS),
+	])
+	return token
+}
+
+/**
+ * Consume a token. One conditional DELETE is atomic in D1, so of any number of
+ * concurrent redeems exactly one sees changes = 1. A token presented for another
+ * tool or other args is not consumed (it stays redeemable for what it was minted for).
+ */
+export async function redeemApprovalToken(
+	db: D1Database,
+	token: string,
+	tool: string,
+	argsHash: string,
+): Promise<boolean> {
+	const res = await db
+		.prepare(
+			'DELETE FROM approval_tokens WHERE token = ?1 AND tool = ?2 AND args_hash = ?3 AND expires_at > ?4',
+		)
+		.bind(token, tool, argsHash, Date.now())
+		.run()
+	return res.meta.changes === 1
+}
+
 export interface RunWithGuardrailsOpts<R> {
 	def: GuardrailDef
 	args: Record<string, unknown>
@@ -100,12 +142,7 @@ export async function runWithGuardrails<R>(
 					details: { tool: def.name, scope: def.scope, risk: def.risk },
 				}
 			}
-			const token = crypto.randomUUID()
-			await env.FERMI_KV.put(
-				`approval:${token}`,
-				JSON.stringify({ tool: def.name, args_hash: argsHash }),
-				{ expirationTtl: 300 },
-			)
+			const token = await mintApprovalToken(env.FERMI_DB, def.name, argsHash)
 			await writeAudit(env.FERMI_DB, {
 				tool: def.name,
 				args_hash: argsHash,
@@ -117,11 +154,7 @@ export async function runWithGuardrails<R>(
 
 		// A token is bound to the exact tool and args it was minted for. `args` never
 		// carries approval_token (defineTool strips it), so the hashes are comparable.
-		const stored = await env.FERMI_KV.get<{ tool: string; args_hash: string }>(
-			`approval:${approvalToken}`,
-			'json',
-		)
-		if (!stored || stored.tool !== def.name || stored.args_hash !== argsHash) {
+		if (!(await redeemApprovalToken(env.FERMI_DB, approvalToken, def.name, argsHash))) {
 			await writeAudit(env.FERMI_DB, {
 				tool: def.name,
 				args_hash: argsHash,
@@ -130,7 +163,6 @@ export async function runWithGuardrails<R>(
 			})
 			return { kind: 'denied', reason: 'invalid_or_expired_token' }
 		}
-		await env.FERMI_KV.delete(`approval:${approvalToken}`)
 	}
 
 	const hookCtx = { tool: def.name, args }
