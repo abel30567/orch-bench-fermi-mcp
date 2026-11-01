@@ -69,14 +69,34 @@ export interface RunWithGuardrailsOpts<R> {
 	handler: (args: Record<string, unknown>) => Promise<R>
 }
 
+function parseApproval(raw: string | null): { tool?: unknown; args_hash?: unknown } | null {
+	if (!raw) return null
+	try {
+		const parsed: unknown = JSON.parse(raw)
+		return parsed && typeof parsed === 'object' ? (parsed as Record<string, unknown>) : null
+	} catch {
+		return null
+	}
+}
+
 export async function runWithGuardrails<R>(
 	opts: RunWithGuardrailsOpts<R>,
 ): Promise<GuardrailResult<R>> {
 	const { def, args, env, agentState, approvalToken, planModeExempt, approvalPolicy, handler } =
 		opts
-	const argsHash = await hashArgs(args)
+	// approval_token is never part of the hashed args, so a token minted for a
+	// call matches the same call re-invoked with the token attached.
+	const { approval_token: _ignored, ...hashedArgs } = args
+	const argsHash = await hashArgs(hashedArgs)
 
 	if (agentState?.mode === 'plan' && def.mutates && !planModeExempt) {
+		await writeAudit(env.FERMI_DB, {
+			tool: def.name,
+			args_hash: argsHash,
+			outcome: 'denied',
+			risk: def.risk,
+			session_id: agentState?.sessionId,
+		})
 		return {
 			kind: 'denied',
 			reason: 'plan_mode_restricted',
@@ -108,8 +128,9 @@ export async function runWithGuardrails<R>(
 			return { kind: 'pending_approval', token }
 		}
 
-		const stored = await env.FERMI_KV.get(`approval:${approvalToken}`)
-		if (!stored) {
+		// The token is bound to the exact tool and args it was minted for.
+		const stored = parseApproval(await env.FERMI_KV.get(`approval:${approvalToken}`))
+		if (!stored || stored.tool !== def.name || stored.args_hash !== argsHash) {
 			await writeAudit(env.FERMI_DB, {
 				tool: def.name,
 				args_hash: argsHash,
@@ -118,6 +139,7 @@ export async function runWithGuardrails<R>(
 			})
 			return { kind: 'denied', reason: 'invalid_or_expired_token' }
 		}
+		// Single use: consumed on a successful redeem.
 		await env.FERMI_KV.delete(`approval:${approvalToken}`)
 	}
 
