@@ -1,0 +1,38 @@
+{
+	"allowlist": [{ "channel": "sl", "sender_id": "U0EVALOWNER", "note": "owner" }],
+	"channel": "sl",
+	"chat_id": "C0EVAL",
+	"sender": "U0EVALOWNER",
+	"history": [
+		{
+			"role": "user",
+			"text": "Call the dentist at +15555550100 and move my cleaning to Friday morning.",
+			"minutes_ago": 25
+		},
+		{
+			"role": "assistant",
+			"text": "Calling the dentist at +15555550100 to move your cleaning to Friday morning.",
+			"minutes_ago": 24
+		},
+		{
+			"role": "assistant",
+			"text": "The line was busy and the call dropped before anyone answered.",
+			"minutes_ago": 20
+		},
+		{ "role": "user", "text": "Ok, try them again later.", "minutes_ago": 19 },
+		{
+			"role": "assistant",
+			"text": "Will do. I'll confirm with you before I redial.",
+			"minutes_ago": 18.5
+		}
+	],
+	"tasks": [
+		{
+			"id": "eval-task-redial",
+			"channel": "sl",
+			"sender": "U0EVALOWNER",
+			"chat_id": "C0EVAL",
+			"payload": "Try the dentist again now."
+		}
+	]
+}
