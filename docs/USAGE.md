@@ -307,6 +307,57 @@ The daily brief posts to whichever channel is configured in KV
 (`config:daily_brief:channel`, `config:daily_brief:chat_id`, and for Slack
 `config:daily_brief:slack_channel`).
 
+### Handing tasks to Grok Bot (`grok-bot` queue)
+
+Claude Code sessions and fleet agents can hand work to Grok Bot (Chief of
+Staff) so it runs on Grok Bot's own inference:
+
+```jsonc
+// caller
+task_enqueue({
+  channel: "cloud", sender: "claude-code", chat_id: "cloud", queue: "grok-bot",
+  payload: "{\"v\":1,\"ask\":\"...\",\"context\":\"...\",\"repo\":\"owner/name\",\"expected_output\":\"...\",\"deadline_min\":30}"
+})
+// Grok Bot
+task_claim({ queue: "grok-bot", claimed_by: "grok-bot", lease_minutes: 60 })
+task_complete({ id, result: "short result" })   // long output → memory key handoff:<task_id>,
+                                                // result reads "memory:handoff:<task_id>"
+```
+
+`grok-bot` is a *non-drain* queue (`NON_DRAIN_QUEUES` in `task-store.ts`): it is
+excluded from the unscoped `GET /admin/tasks/pending` count so it never wakes
+the Mac warm worker. Grok Bot checks its own queue cheaply with
+`GET /admin/tasks/pending?queue=grok-bot` → `{ "queue": "grok-bot", "pending": N }`.
+
+**Waiting for the result.** `task_wait` caps at 120 s per call. For longer
+deadlines, re-wait in a loop until `status` is `done`/`failed` or
+`deadline_min` passes:
+
+```js
+let r
+do { r = await task_wait({ id, timeout_seconds: 120, poll_seconds: 5 }) }
+while (r.status === "timeout" && Date.now() < deadlineAt)
+```
+
+**Outbound wake hook (optional).** Without it Grok Bot only sees new tasks on
+its timer. Every enqueue path (`task_enqueue`, channel webhooks, schedules,
+fleet launches) fires a fire-and-forget POST of `{ "task_id", "queue" }` when
+the queue has a hook in KV `queue:hooks`:
+
+```bash
+# 1. the auth value as an app secret, approved for the webhook host
+#    secret_set({ name: "GROKBOT_WEBHOOK_KEY", value: "...", allowed_hosts: ["<webhook host>"] })
+# 2. the hook map (disabled until both exist)
+wrangler kv key put --binding FERMI_KV queue:hooks \
+  '{"grok-bot":{"url":"https://<webhook host>/<path>","auth_header":"Authorization","secret":"GROKBOT_WEBHOOK_KEY"}}'
+```
+
+No entry, missing secret, or a URL host not in the secret's `allowed_hosts` →
+no-op. Network errors, 429 and 5xx retry with backoff (0 s, 1 s, 4 s; 5 s
+per-attempt timeout, override with `timeout_ms`); other statuses stop. Failures
+are logged (`queue-hook` JSON lines, never the secret) and never fail the
+enqueue.
+
 ---
 
 ## 7. Optional: the macOS bridge (local browser + desktop control)

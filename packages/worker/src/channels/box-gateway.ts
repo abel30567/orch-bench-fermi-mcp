@@ -434,6 +434,7 @@ export async function handleBoxReport(request: Request, env: Env): Promise<Respo
 	if (note.length > 0) {
 		// Progress notes land as completed rows on the agent's events queue so
 		// orchestrators see them via cloud_agent_get without a schema change.
+		// No queue hook: these rows are completed immediately (bookkeeping, not work).
 		const event = await enqueueTask(env.FERMI_DB, {
 			channel: 'cloud',
 			sender: `box:${box.box_id}`,

@@ -10,21 +10,28 @@ import { enqueueTask, hasOpenTaskFromSender } from '../lib/task-store.ts'
 export async function handleScheduleTick(env: Env, now = Date.now()) {
 	const due = await dueSchedules(env.FERMI_DB, now)
 	let enqueued = 0
+	const hooks: Promise<unknown>[] = []
+	const hook = { env, waitUntil: (p: Promise<unknown>) => hooks.push(p) }
 	for (const schedule of due) {
 		const sender = `schedule:${schedule.id}`
 		if (await hasOpenTaskFromSender(env.FERMI_DB, sender)) {
 			await advanceSchedule(env.FERMI_DB, schedule, 'coalesced', now)
 			continue
 		}
-		await enqueueTask(env.FERMI_DB, {
-			channel: schedule.channel,
-			sender,
-			chatId: schedule.chat_id,
-			payload: schedule.prompt,
-		})
+		await enqueueTask(
+			env.FERMI_DB,
+			{
+				channel: schedule.channel,
+				sender,
+				chatId: schedule.chat_id,
+				payload: schedule.prompt,
+			},
+			hook,
+		)
 		await advanceSchedule(env.FERMI_DB, schedule, 'enqueued', now)
 		enqueued++
 	}
 	if (enqueued > 0) await wakeMacDaemon(env)
+	await Promise.allSettled(hooks)
 	return { due: due.length }
 }

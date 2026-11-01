@@ -13,7 +13,12 @@ interface WhatsAppInbound {
 
 const APPROVE_COMMAND = /^\/approve\s+(\S+)/i
 
-export async function handleWhatsAppWebhook(request: Request, env: Env): Promise<Response> {
+export async function handleWhatsAppWebhook(
+	request: Request,
+	env: Env,
+	ctx?: ExecutionContext,
+): Promise<Response> {
+	const hook = { env, waitUntil: ctx ? (p: Promise<unknown>) => ctx.waitUntil(p) : undefined }
 	// Fail closed: reject when the webhook secret is unset or the header mismatches.
 	const secret = env.WA_WEBHOOK_SECRET
 	const header = request.headers.get('x-wa-bridge-secret') ?? ''
@@ -53,12 +58,16 @@ export async function handleWhatsAppWebhook(request: Request, env: Env): Promise
 		// Group turn: attribute the speaker, enqueue, no /approve, no ack.
 		const attribution = `[${sender}] `
 		await logChannelMessage(env.FERMI_DB, 'wa', chatId, 'user', attribution + text)
-		await enqueueTask(env.FERMI_DB, {
-			channel: 'wa',
-			sender,
-			chatId,
-			payload: attribution + text,
-		})
+		await enqueueTask(
+			env.FERMI_DB,
+			{
+				channel: 'wa',
+				sender,
+				chatId,
+				payload: attribution + text,
+			},
+			hook,
+		)
 		return new Response('ok')
 	}
 
@@ -78,7 +87,7 @@ export async function handleWhatsAppWebhook(request: Request, env: Env): Promise
 	// Gateway: log the turn, enqueue for the local daemon, ack. The bridge wakes
 	// its own daemon on 200, so no push-wake is needed here.
 	await logChannelMessage(env.FERMI_DB, 'wa', chatId, 'user', text)
-	await enqueueTask(env.FERMI_DB, { channel: 'wa', sender, chatId, payload: text })
+	await enqueueTask(env.FERMI_DB, { channel: 'wa', sender, chatId, payload: text }, hook)
 	await sendWhatsAppMessage(env, chatId, 'Got it — working on it.')
 	return new Response('ok')
 }
