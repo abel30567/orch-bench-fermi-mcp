@@ -1,3 +1,5 @@
+import { RUNNER_ENTRY, isRunnerManifest, runnerUrl } from './runner-pin.ts'
+
 export interface FleetConfig {
 	region: string
 	monthly_budget_usd: number
@@ -11,6 +13,8 @@ export interface FleetConfig {
 	/** Supply-chain pin for the box-runner boot download (#34); launch refuses when unset. */
 	runner_ref: string | null
 	runner_sha256: string | null
+	/** Manifest pin (`{path: sha256}`); null for a legacy single-file pin. */
+	runner_files: Record<string, string> | null
 	default_ttl_seconds: number
 	max_ttl_seconds: number
 	heartbeat_stale_ms: number
@@ -28,6 +32,7 @@ const DEFAULTS: FleetConfig = {
 	mcp_base_url: null,
 	runner_ref: null,
 	runner_sha256: null,
+	runner_files: null,
 	default_ttl_seconds: 3600,
 	max_ttl_seconds: 4 * 3600,
 	heartbeat_stale_ms: 10 * 60_000,
@@ -148,6 +153,61 @@ export async function updateFleetConfig(
 	} catch {}
 	await env.FERMI_KV.put('fleet:config', JSON.stringify({ ...stored, ...verdict.patch }))
 	return { ok: true, config: verdict.config }
+}
+
+/**
+ * Pin the runner at a commit (POST /admin/fleet/pin-runner). Without `files`
+ * this is the legacy fetch+hash of box-runner.mjs alone. With a manifest, every
+ * file is fetched and must match its hash, so a bad manifest is refused here
+ * rather than bricking every boot. Nothing is written unless all of it passes.
+ */
+export async function pinRunner(
+	env: Env,
+	input: { ref?: unknown; files?: unknown } | null,
+): Promise<{ status: number; body: Record<string, unknown> }> {
+	const ref = input?.ref
+	const files = input?.files
+	if (typeof ref !== 'string' || !/^[0-9a-f]{7,40}$/.test(ref)) {
+		return { status: 400, body: { ok: false, error: 'ref must be a commit sha' } }
+	}
+	if (files !== undefined && !isRunnerManifest(files)) {
+		return {
+			status: 400,
+			body: { ok: false, error: `files must map safe paths to sha256, with ${RUNNER_ENTRY}` },
+		}
+	}
+	const paths = files ? Object.keys(files) : [RUNNER_ENTRY]
+	const hashes: [string, string][] = []
+	let bytes = 0
+	for (const path of paths) {
+		const res = await fetch(runnerUrl(ref, path))
+		if (!res.ok) {
+			return { status: 502, body: { ok: false, error: `fetch_${res.status}`, path } }
+		}
+		const content = await res.arrayBuffer()
+		const digest = await crypto.subtle.digest('SHA-256', content)
+		const sha256 = [...new Uint8Array(digest)].map((x) => x.toString(16).padStart(2, '0')).join('')
+		if (files && files[path] !== sha256) {
+			return { status: 409, body: { ok: false, error: 'hash_mismatch', path, sha256 } }
+		}
+		hashes.push([path, sha256])
+		bytes += content.byteLength
+	}
+	const pinned = Object.fromEntries(hashes)
+	const sha256 = pinned[RUNNER_ENTRY]
+	const raw = await env.FERMI_KV.get('fleet:config')
+	const config = raw ? JSON.parse(raw) : {}
+	await env.FERMI_KV.put(
+		'fleet:config',
+		JSON.stringify({
+			...config,
+			runner_ref: ref,
+			runner_sha256: sha256,
+			// Always overwritten: a stale manifest would outrank a new single-file pin.
+			runner_files: files ?? null,
+		}),
+	)
+	return { status: 200, body: { ok: true, ref, sha256, files: pinned, bytes } }
 }
 
 export function hourlyRate(instanceType: string): number {
