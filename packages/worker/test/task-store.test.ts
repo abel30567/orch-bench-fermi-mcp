@@ -255,7 +255,14 @@ describe('task-store queues and leases', () => {
 	})
 })
 
-import { countPendingTasks as _cpt, isFleetQueue as _ifq } from '../src/lib/task-store.ts'
+import {
+	NON_DRAIN_QUEUES,
+	NON_DRAIN_QUEUE_PREFIXES,
+	countPendingTasks as _cpt,
+	isFleetQueue as _ifq,
+	handleAdminTasksPending,
+	isNonDrainQueue,
+} from '../src/lib/task-store.ts'
 describe('fleet queues isolated from channel drain (2026-09-08 SCA incident)', () => {
 	beforeAll(async () => {
 		await setupTasksSchema()
@@ -293,5 +300,103 @@ describe('fleet queues isolated from channel drain (2026-09-08 SCA incident)', (
 		expect(_ifq('broker:ops')).toBe(true)
 		expect(_ifq('default')).toBe(false)
 		expect(_ifq(undefined)).toBe(false)
+	})
+})
+
+describe('non-drain queues excluded from the unscoped (channel drain) count', () => {
+	beforeAll(async () => {
+		await setupTasksSchema()
+	})
+	beforeEach(async () => {
+		await clearTasks()
+	})
+	it('unscoped pending count excludes grok-bot; scoped count sees it', async () => {
+		await enqueueTask(env.FERMI_DB, { channel: 'tg', sender: 'u', chatId: 'c', payload: 'hi' })
+		await enqueueTask(env.FERMI_DB, {
+			channel: 'cloud',
+			sender: 'claude-code',
+			chatId: 'cloud',
+			payload: JSON.stringify({ v: 1, ask: 'summarize', deadline_min: 30 }),
+			queue: 'grok-bot',
+		})
+		expect(await countPendingTasks(env.FERMI_DB)).toBe(1)
+		expect(await countPendingTasks(env.FERMI_DB, 'grok-bot')).toBe(1)
+		expect(await countPendingTasks(env.FERMI_DB, 'main')).toBe(1)
+	})
+	it('every configured non-drain queue is excluded', async () => {
+		for (const q of NON_DRAIN_QUEUES) {
+			await enqueueTask(env.FERMI_DB, {
+				channel: 'cloud',
+				sender: 's',
+				chatId: 'c',
+				payload: 'x',
+				queue: q,
+			})
+		}
+		for (const prefix of NON_DRAIN_QUEUE_PREFIXES) {
+			await enqueueTask(env.FERMI_DB, {
+				channel: 'cloud',
+				sender: 's',
+				chatId: 'c',
+				payload: 'x',
+				queue: `${prefix}abc`,
+			})
+		}
+		// lookalike names are NOT excluded
+		await enqueueTask(env.FERMI_DB, {
+			channel: 'cloud',
+			sender: 's',
+			chatId: 'c',
+			payload: 'x',
+			queue: 'grok-bot-2',
+		})
+		expect(await countPendingTasks(env.FERMI_DB)).toBe(1)
+	})
+	it('isNonDrainQueue classifies correctly; grok-bot is not a fleet queue (claimable)', () => {
+		expect(isNonDrainQueue('grok-bot')).toBe(true)
+		expect(isNonDrainQueue('agent:ca_1')).toBe(true)
+		expect(isNonDrainQueue('broker:ops')).toBe(true)
+		expect(isNonDrainQueue('main')).toBe(false)
+		expect(isNonDrainQueue('grok-bot-2')).toBe(false)
+		expect(isNonDrainQueue(undefined)).toBe(false)
+		expect(_ifq('grok-bot')).toBe(false)
+	})
+})
+
+describe('GET /admin/tasks/pending', () => {
+	const auth = { authorization: 'Bearer test-admin-bearer' }
+	beforeAll(async () => {
+		await setupTasksSchema()
+	})
+	beforeEach(async () => {
+		await clearTasks()
+		await enqueueTask(env.FERMI_DB, { channel: 'tg', sender: 'u', chatId: 'c', payload: 'a' })
+		for (const p of ['x', 'y']) {
+			await enqueueTask(env.FERMI_DB, {
+				channel: 'cloud',
+				sender: 's',
+				chatId: 'cloud',
+				payload: p,
+				queue: 'grok-bot',
+			})
+		}
+	})
+	it('rejects without the bearer token', async () => {
+		const res = await handleAdminTasksPending(new Request('https://f/admin/tasks/pending'), env)
+		expect(res.status).toBe(401)
+	})
+	it('no param keeps the unscoped (channel drain) count', async () => {
+		const res = await handleAdminTasksPending(
+			new Request('https://f/admin/tasks/pending', { headers: auth }),
+			env,
+		)
+		expect(await res.json()).toEqual({ pending: 1 })
+	})
+	it('?queue=grok-bot returns that queue’s count', async () => {
+		const res = await handleAdminTasksPending(
+			new Request('https://f/admin/tasks/pending?queue=grok-bot', { headers: auth }),
+			env,
+		)
+		expect(await res.json()).toEqual({ queue: 'grok-bot', pending: 2 })
 	})
 })

@@ -1,3 +1,5 @@
+import { type WaitUntil, scheduleQueueHook } from './queue-hooks.ts'
+
 export interface TaskRow {
 	id: string
 	channel: string
@@ -34,6 +36,12 @@ export async function enqueueTask(
 		queue?: string
 		parentTaskId?: string
 	},
+	/**
+	 * Pass env (and the request's waitUntil when available) to fire the
+	 * queue's outbound wake hook (KV `queue:hooks`). Fire-and-forget: a hook
+	 * failure never fails the enqueue.
+	 */
+	hook?: { env: Env; waitUntil?: WaitUntil; delaysMs?: number[] },
 ): Promise<{ id: string; created_at: number }> {
 	const id = crypto.randomUUID()
 	const createdAt = Date.now()
@@ -52,6 +60,14 @@ export async function enqueueTask(
 			input.parentTaskId ?? null,
 		)
 		.run()
+	if (hook) {
+		scheduleQueueHook(
+			hook.env,
+			{ task_id: id, queue: input.queue ?? DEFAULT_QUEUE },
+			hook.waitUntil,
+			hook.delaysMs,
+		)
+	}
 	return { id, created_at: createdAt }
 }
 
@@ -131,21 +147,65 @@ export async function countPendingTasks(db: D1Database, queue?: string): Promise
 		return row?.n ?? 0
 	}
 	// Unscoped count is the CHANNEL drain's signal (/admin/tasks/pending → the
-	// Mac warm worker). Fleet queues (agent:<id> work tasks, broker:ops) are
-	// drained by boxes and the broker executor, NOT the channel drain — counting
-	// them here woke the drain, which then claimed cloud-agent tasks out from
-	// under their boxes (2026-09-08). Exclude them.
+	// Mac warm worker). Non-drain queues are owned by other consumers: fleet
+	// queues (agent:<id>, broker:ops) are drained by boxes and the broker
+	// executor — counting them woke the drain, which then claimed cloud-agent
+	// tasks out from under their boxes (2026-09-08). grok-bot is drained by
+	// Grok Bot; counting it made the warm worker re-fire on an empty `main`.
+	const clauses: string[] = []
+	const binds: string[] = []
+	for (const prefix of NON_DRAIN_QUEUE_PREFIXES) {
+		binds.push(`${prefix}%`)
+		clauses.push(`queue NOT LIKE ?${binds.length}`)
+	}
+	for (const q of NON_DRAIN_QUEUES) {
+		binds.push(q)
+		clauses.push(`queue != ?${binds.length}`)
+	}
 	const row = await db
 		.prepare(
-			"SELECT COUNT(*) AS n FROM tasks WHERE status = 'pending' AND queue NOT LIKE 'agent:%' AND queue NOT LIKE 'broker:%'",
+			`SELECT COUNT(*) AS n FROM tasks WHERE status = 'pending' AND ${clauses.join(' AND ')}`,
 		)
+		.bind(...binds)
 		.first<{ n: number }>()
 	return row?.n ?? 0
 }
 
-/** Queues owned by the cloud fleet / broker — off-limits to the channel drain. */
+/**
+ * GET /admin/tasks/pending[?queue=<name>] — bearer-gated pending count. No
+ * queue → the channel drain's unscoped count (non-drain queues excluded);
+ * with ?queue= → that queue's count, so a consumer like Grok Bot can cheaply
+ * skip work when its queue is empty.
+ */
+export async function handleAdminTasksPending(request: Request, env: Env): Promise<Response> {
+	const auth = request.headers.get('authorization') ?? ''
+	const token = env.FERMI_BEARER_TOKEN
+	if (!token || auth !== `Bearer ${token}`) return new Response('Unauthorized', { status: 401 })
+	const queue = new URL(request.url).searchParams.get('queue') || undefined
+	if (!queue) return Response.json({ pending: await countPendingTasks(env.FERMI_DB) })
+	return Response.json({ queue, pending: await countPendingTasks(env.FERMI_DB, queue) })
+}
+
+/** Queue-name prefixes owned by the cloud fleet / broker. */
+export const NON_DRAIN_QUEUE_PREFIXES: readonly string[] = ['agent:', 'broker:']
+/** Exact queues drained by a dedicated consumer, not the channel drain. */
+export const NON_DRAIN_QUEUES: readonly string[] = ['grok-bot']
+
+/** Queues owned by the cloud fleet / broker — off-limits to the channel drain's task_claim. */
 export function isFleetQueue(queue?: string): boolean {
 	return !!queue && (queue.startsWith('agent:') || queue.startsWith('broker:'))
+}
+
+/**
+ * Queues excluded from the channel drain's unscoped pending count: fleet
+ * queues plus dedicated-consumer queues (grok-bot). Unlike fleet queues,
+ * dedicated queues may still be claimed via task_claim by their consumer.
+ */
+export function isNonDrainQueue(queue?: string): boolean {
+	if (!queue) return false
+	return (
+		NON_DRAIN_QUEUES.includes(queue) || NON_DRAIN_QUEUE_PREFIXES.some((p) => queue.startsWith(p))
+	)
 }
 
 export async function listTasks(

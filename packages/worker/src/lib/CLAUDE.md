@@ -23,6 +23,7 @@ Core utilities and data stores used across the worker.
 - **tool.ts** — `defineTool()` wrapper: scope, risk level, audit logging, approval gate
 - **audit.ts** — D1 audit log: tool name, args hash, duration, success, session_id
 - **budget.ts** — KV daily token budget tracking
+- **queue-hooks.ts** — Outbound wake hooks: POST `{task_id, queue}` on enqueue to queues configured in KV `queue:hooks` (secret-backed auth header, bounded retry)
 - **embeddings.ts** — Workers AI embedding generation
 - **rrf.ts** — Reciprocal Rank Fusion: merges FTS5 + Vectorize results
 - **frontmatter.ts** — SKILL.md YAML frontmatter parser

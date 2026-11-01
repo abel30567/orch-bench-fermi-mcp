@@ -78,20 +78,24 @@ export async function handleBoxBrowserRpc(request: Request, env: Env): Promise<R
 		return Response.json({ ok: false, error: 'origin_not_allowed' }, { status: 403 })
 	}
 
-	const op = await enqueueTask(env.FERMI_DB, {
-		channel: 'broker',
-		sender: `box:${box.box_id}`,
-		chatId: 'broker',
-		queue: BROKER_QUEUE,
-		payload: JSON.stringify({
-			session: body.session,
-			site: meta.site,
-			op: body.op,
-			args: body.args ?? {},
-			box_id: box.box_id,
-			agent_id: agentId,
-		}),
-	})
+	const op = await enqueueTask(
+		env.FERMI_DB,
+		{
+			channel: 'broker',
+			sender: `box:${box.box_id}`,
+			chatId: 'broker',
+			queue: BROKER_QUEUE,
+			payload: JSON.stringify({
+				session: body.session,
+				site: meta.site,
+				op: body.op,
+				args: body.args ?? {},
+				box_id: box.box_id,
+				agent_id: agentId,
+			}),
+		},
+		{ env },
+	)
 	return Response.json({ ok: true, op_id: op.id })
 }
 

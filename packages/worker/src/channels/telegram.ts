@@ -25,6 +25,7 @@ export async function handleTelegramWebhook(
 	env: Env,
 	ctx?: ExecutionContext,
 ): Promise<Response> {
+	const hook = { env, waitUntil: ctx ? (p: Promise<unknown>) => ctx.waitUntil(p) : undefined }
 	// Fail closed: reject when the webhook secret is unset or the header mismatches.
 	const secret = env.TELEGRAM_WEBHOOK_SECRET
 	const header = request.headers.get('x-telegram-bot-api-secret-token') ?? ''
@@ -65,12 +66,16 @@ export async function handleTelegramWebhook(
 		// Group turn: attribute the speaker, enqueue, no /approve, no ack.
 		const attribution = `[${message.from.first_name ?? senderId}] `
 		await logChannelMessage(env.FERMI_DB, 'tg', chatId, 'user', attribution + text)
-		await enqueueTask(env.FERMI_DB, {
-			channel: 'tg',
-			sender: senderId,
-			chatId,
-			payload: attribution + text,
-		})
+		await enqueueTask(
+			env.FERMI_DB,
+			{
+				channel: 'tg',
+				sender: senderId,
+				chatId,
+				payload: attribution + text,
+			},
+			hook,
+		)
 		if (ctx) ctx.waitUntil(wakeMacDaemon(env))
 		else await wakeMacDaemon(env)
 		return new Response('ok')
@@ -92,7 +97,7 @@ export async function handleTelegramWebhook(
 	// Gateway: log the turn, enqueue for the local daemon, ack, and push-wake
 	// the daemon so pickup doesn't wait for the next 60s poll.
 	await logChannelMessage(env.FERMI_DB, 'tg', chatId, 'user', text)
-	await enqueueTask(env.FERMI_DB, { channel: 'tg', sender: senderId, chatId, payload: text })
+	await enqueueTask(env.FERMI_DB, { channel: 'tg', sender: senderId, chatId, payload: text }, hook)
 	await sendTelegramMessage(env, chatId, 'Got it — working on it.')
 	if (ctx) ctx.waitUntil(wakeMacDaemon(env))
 	else await wakeMacDaemon(env)

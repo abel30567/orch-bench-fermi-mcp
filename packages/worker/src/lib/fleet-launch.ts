@@ -80,23 +80,27 @@ export async function launchCloudAgent(env: Env, input: LaunchInput): Promise<La
 			return { ...reservation, ok: false, error: String(reservation.error ?? 'admission_denied') }
 	}
 	const queue = `agent:${agentId}`
-	const task = await enqueueTask(env.FERMI_DB, {
-		channel: 'cloud',
-		sender: `cloud_agent:${agentId}`,
-		chatId: 'cloud',
-		payload: JSON.stringify({
-			prompt: input.prompt,
-			proof_contract: input.proof_contract,
-			route: input.route ?? 'claude',
-			model: input.model ?? null,
-			skills: input.skills ?? [],
-			sessions: input.sessions ?? [],
-			repo: input.repo ?? null,
-			branch: input.branch ?? null,
-		}),
-		queue,
-		parentTaskId: input.parent_task_id,
-	})
+	const task = await enqueueTask(
+		env.FERMI_DB,
+		{
+			channel: 'cloud',
+			sender: `cloud_agent:${agentId}`,
+			chatId: 'cloud',
+			payload: JSON.stringify({
+				prompt: input.prompt,
+				proof_contract: input.proof_contract,
+				route: input.route ?? 'claude',
+				model: input.model ?? null,
+				skills: input.skills ?? [],
+				sessions: input.sessions ?? [],
+				repo: input.repo ?? null,
+				branch: input.branch ?? null,
+			}),
+			queue,
+			parentTaskId: input.parent_task_id,
+		},
+		{ env },
+	)
 	const created = await createCloudAgent(env.FERMI_DB, {
 		id: agentId,
 		queue,
