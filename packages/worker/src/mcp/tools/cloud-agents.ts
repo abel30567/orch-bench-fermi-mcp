@@ -4,6 +4,7 @@ import { fleetRelease } from '../../do/fleet-do.ts'
 import { getFleetConfig } from '../../lib/fleet-config.ts'
 import { launchCloudAgent } from '../../lib/fleet-launch.ts'
 import {
+	CLAUDE_ACCOUNT_RE,
 	type CloudAgentView,
 	getCloudAgent,
 	heartbeatBox,
@@ -60,6 +61,13 @@ export const cloudAgentLaunchSchema = {
 		.default('claude')
 		.describe('Inference route for the agent harness'),
 	model: z.string().optional().describe('Override the route model id (e.g. gpt-6-astra)'),
+	account: z
+		.string()
+		.regex(CLAUDE_ACCOUNT_RE)
+		.optional()
+		.describe(
+			'Alternate Claude account (claude route only). The box is served the Fermi secret CLAUDE_CODE_OAUTH_TOKEN_<ACCOUNT>; omit for the default account.',
+		),
 	box_id: z
 		.string()
 		.optional()
