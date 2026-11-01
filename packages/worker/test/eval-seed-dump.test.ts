@@ -1,13 +1,15 @@
 import { env } from 'cloudflare:test'
 import { beforeAll, describe, expect, it } from 'vitest'
 import { DUMP_QUERIES, seedStatements, shapeDump } from '../scripts/eval-db.mjs'
+import historyFixture from './fixtures/eval/phone-history.json'
 import fixture from './fixtures/eval/sample.json'
 import { applyMigrations } from './setup-d1.ts'
 
 // eval-seed.mjs / eval-dump.mjs run these same statements through
 // `wrangler d1 execute --local`; here they run against the test D1.
+const db = env.FERMI_DB
+
 async function seed(f: unknown) {
-	const db = env.FERMI_DB
 	await db.batch(seedStatements(f).map((s: string) => db.prepare(s)))
 }
 
@@ -40,6 +42,7 @@ describe('eval seed/dump', () => {
 			'schedules',
 			'skills',
 			'audit',
+			'history',
 		])
 	})
 
@@ -49,6 +52,37 @@ describe('eval seed/dump', () => {
 		const out = await dump()
 		expect(out.memories).toHaveLength(fixture.memories.length)
 		expect(out.allowlist).toEqual(fixture.allowlist)
+	})
+
+	it('round-trips seeded conversation history', async () => {
+		const now = Date.now()
+		await db.batch(seedStatements(historyFixture, now).map((s: string) => db.prepare(s)))
+		const out = await dump()
+		expect(out.history).toEqual(
+			historyFixture.history.map((t) => ({
+				channel: historyFixture.channel,
+				chat_id: historyFixture.chat_id,
+				role: t.role,
+				text: t.text,
+				created_at: now - t.minutes_ago * 60_000,
+			})),
+		)
+		expect(out.tasks.map((t: { id: string }) => t.id)).toEqual(['eval-task-redial'])
+	})
+
+	it('history dump leaves out MCP session logs', async () => {
+		await seed(historyFixture)
+		await db
+			.prepare(
+				"INSERT INTO sessions (id, host, mode, started_at) VALUES ('mcp-s', 'claude-desktop', 'chat', 1)",
+			)
+			.run()
+		await db
+			.prepare(
+				"INSERT INTO messages (session_id, role, body, created_at) VALUES ('mcp-s', 'user', '{}', 1)",
+			)
+			.run()
+		expect((await dump()).history).toHaveLength(historyFixture.history.length)
 	})
 
 	it('escapes quotes in values', async () => {
