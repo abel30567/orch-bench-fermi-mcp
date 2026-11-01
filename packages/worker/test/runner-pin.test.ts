@@ -3,7 +3,15 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest'
 import { pinRunner } from '../src/lib/fleet-config.ts'
 import type { CloudAgentRow } from '../src/lib/fleet-store.ts'
 import { bootstrapUserData, dispatchProvision } from '../src/lib/provisioner.ts'
-import { runnerFetchScript, runnerPinFromConfig, runnerUrl } from '../src/lib/runner-pin.ts'
+import {
+	EC2_USER_DATA_MAX_BYTES,
+	MAX_RUNNER_FILES,
+	MAX_RUNNER_MANIFEST_BYTES,
+	runnerFetchScript,
+	runnerFilesError,
+	runnerPinFromConfig,
+	runnerUrl,
+} from '../src/lib/runner-pin.ts'
 import { setupFleetSchema } from './setup-d1.ts'
 
 const REF = 'a'.repeat(40)
@@ -42,8 +50,9 @@ describe('runner boot pin (#34)', () => {
 
 	it('fetch script pins the ref and verifies sha256 with no fallback', () => {
 		const script = runnerFetchScript(PIN)
-		expect(script).toContain(runnerUrl(PIN.ref))
-		expect(script).toContain(PIN.files['box-runner.mjs'])
+		// Paths come from the inlined manifest; every URL is under the pinned ref.
+		expect(script).toContain(`"${runnerUrl(PIN.ref, '')}$p"`)
+		expect(script).toContain(`${PIN.files['box-runner.mjs']}  box-runner.mjs`)
 		expect(script).not.toContain('/main/') // no floating branch
 		expect(script).not.toContain('|| true') // fail closed, no baked-copy fallback
 	})
@@ -156,14 +165,56 @@ describe('runner pin manifest (pr-55)', () => {
 	it('fetches every manifest file at the ref and verifies all before installing any', () => {
 		const script = runnerFetchScript(MANIFEST)
 		const lines = script.split('\n')
-		const lastVerify = Math.max(...lines.map((l, i) => (l.includes('sha256sum -c') ? i : -1)))
-		const firstInstall = lines.findIndex((l) => l.startsWith('mv '))
+		const fetchAt = lines.findIndex((l) => l.includes('curl '))
+		const verifyAt = lines.findIndex((l) => l.includes('sha256sum -c .sha256'))
+		const installAt = lines.findIndex((l) => l.includes('mv '))
+		expect(script).toContain(`"${runnerUrl(REF, '')}$p"`)
 		for (const [path, sha] of Object.entries(MANIFEST.files)) {
-			expect(script).toContain(runnerUrl(REF, path))
-			expect(script).toContain(`echo '${sha}  /opt/fermi/.runner-stage/${path}' | sha256sum -c -`)
-			expect(script).toContain(`mv '/opt/fermi/.runner-stage/${path}' '/opt/fermi/${path}'`)
+			expect(lines.indexOf(`${sha}  ${path}`)).toBeGreaterThan(-1)
+			expect(lines.indexOf(`${sha}  ${path}`)).toBeLessThan(fetchAt)
 		}
-		expect(firstInstall).toBeGreaterThan(lastVerify)
+		expect(verifyAt).toBeGreaterThan(fetchAt)
+		expect(installAt).toBeGreaterThan(verifyAt)
+	})
+
+	// EC2 RunInstances rejects user-data over 16 KB: a pin that passes
+	// validation must always fit, however many files or long paths it lists.
+	it('every valid manifest fits in EC2 user-data', () => {
+		const sha = 'b'.repeat(64)
+		const longRef = `r${'a'.repeat(127)}`
+		// Fill the manifest budget to the byte with the most files allowed.
+		const atCap = (count: number): Record<string, string> => {
+			const files: Record<string, string> = { 'box-runner.mjs': sha }
+			let used = 64 + 2 + 'box-runner.mjs'.length + 1
+			for (let i = 1; i < count; i++) {
+				const left = count - i
+				const len = Math.min(200, Math.floor((MAX_RUNNER_MANIFEST_BYTES - used) / left) - 67)
+				const stem = `harness/m${i}_`
+				const path = `${stem}${'x'.repeat(len - stem.length - 4)}.mjs`
+				files[path] = sha
+				used += 64 + 2 + path.length + 1
+			}
+			return files
+		}
+		for (const files of [atCap(MAX_RUNNER_FILES), atCap(8), atCap(2)]) {
+			const pin = runnerPinFromConfig({ runner_ref: longRef, runner_files: files })
+			expect(pin, `${Object.keys(files).length} files`).not.toBeNull()
+			const ud = userData({
+				runnerPin: pin as NonNullable<typeof pin>,
+				boxToken: `box-test.${'x'.repeat(64)}`,
+				mcpBaseUrl: 'https://fermi.example.workers.dev',
+				claudeModel: 'claude-opus-5-5',
+			})
+			expect(new TextEncoder().encode(ud).length).toBeLessThanOrEqual(EC2_USER_DATA_MAX_BYTES)
+		}
+	})
+
+	it('rejects a manifest over the user-data budget', () => {
+		const sha = 'b'.repeat(64)
+		const files: Record<string, string> = { 'box-runner.mjs': sha }
+		for (let i = 1; i < MAX_RUNNER_FILES; i++) files[`harness/${'m'.repeat(60)}${i}.mjs`] = sha
+		expect(runnerFilesError(files)).toMatch(/fit in EC2 user-data/)
+		expect(runnerPinFromConfig({ runner_ref: REF, runner_files: files })).toBeNull()
 	})
 
 	it('user-data verifies every manifest file before the box token', () => {
@@ -281,6 +332,14 @@ describe('pinRunner (pr-55)', () => {
 			{ ref: REF, files: { 'box-runner.mjs': 'xyz' } },
 			{ ref: REF, files: { 'box-runner.mjs': sha, '../escape.mjs': sha } },
 			{ ref: REF, files: { 'box-runner.mjs': sha, '/abs.mjs': sha } },
+			// Too large for EC2 user-data: would store a pin that can never launch.
+			{
+				ref: REF,
+				files: Object.fromEntries([
+					['box-runner.mjs', sha],
+					...Array.from({ length: 40 }, (_, i) => [`harness/${'m'.repeat(150)}${i}.mjs`, sha]),
+				]),
+			},
 		]
 		for (const body of cases) {
 			const out = await pinRunner(env, body)

@@ -16,6 +16,14 @@
 
 export const RUNNER_ENTRY = 'box-runner.mjs'
 export const MAX_RUNNER_FILES = 64
+/**
+ * EC2 rejects user-data over 16 KB, and the manifest is inlined into it (one
+ * `<sha256>  <path>` line per file). Cap the inlined list so a stored pin can
+ * always launch: this budget plus the fixed fragment and box.env stays well
+ * under the limit.
+ */
+export const MAX_RUNNER_MANIFEST_BYTES = 8192
+export const EC2_USER_DATA_MAX_BYTES = 16384
 
 export interface RunnerPin {
 	/** Commit SHA (or immutable tag) in abel30567/fermi-daemon. */
@@ -51,6 +59,10 @@ export function runnerFilesError(files: unknown): string | null {
 		if (typeof sha !== 'string' || !SHA256_RE.test(sha))
 			return `sha256 for ${path} must be 64 lowercase hex`
 	}
+	// One `<sha256>  <path>\n` line per file in the generated user-data.
+	const manifestBytes = entries.reduce((n, [path]) => n + 64 + 2 + path.length + 1, 0)
+	if (manifestBytes > MAX_RUNNER_MANIFEST_BYTES)
+		return `files manifest is ${manifestBytes} bytes; at most ${MAX_RUNNER_MANIFEST_BYTES} fit in EC2 user-data`
 	return null
 }
 
@@ -92,6 +104,9 @@ export function runnerUrl(ref: string, path: string = RUNNER_ENTRY): string {
  * hash → install into the same relative layout. Aborts non-zero on any missing
  * or mismatched file (callers run under `set -euo pipefail`) before anything
  * is installed. No fallback to a baked copy — fail closed is the point.
+ *
+ * The manifest is inlined once as a `sha256sum -c` list that both loops read,
+ * so each file costs one line of user-data (see MAX_RUNNER_MANIFEST_BYTES).
  */
 export function runnerFetchScript(
 	pin: RunnerPin,
@@ -101,26 +116,22 @@ export function runnerFetchScript(
 	const base = opts.baseUrl ?? runnerUrl(pin.ref, '').replace(/\/$/, '')
 	const dir = opts.dir ?? '/opt/fermi'
 	const stage = `${dir}/.runner-stage`
+	// Manifest paths never start with '.', so the list cannot collide with a file.
+	const list = `${stage}/.sha256`
 	const paths = Object.keys(pin.files).sort()
-	const subdirs = [...new Set(paths.filter((p) => p.includes('/')).map(parentDir))].sort()
-	const lines = [`rm -rf '${stage}'`, `mkdir -p '${stage}'`]
-	for (const sub of subdirs) lines.push(`mkdir -p '${stage}/${sub}'`)
-	// --retry: large fleets boot in bursts and GitHub's raw CDN throttles them
-	// (2 of 100 boxes died to this on 2026-09-07). Retries cover transient
-	// throttling; the sha256 gate still catches anything short or tampered.
-	for (const p of paths)
-		lines.push(
-			`curl -fsSL --retry 4 --retry-delay 3 --retry-all-errors '${base}/${p}' -o '${stage}/${p}'`,
-		)
-	for (const p of paths)
-		lines.push(`echo '${pin.files[p]}  ${stage}/${p}' | sha256sum -c - >/dev/null`)
-	// Install only after every file verified.
-	for (const sub of subdirs) lines.push(`mkdir -p '${dir}/${sub}'`)
-	for (const p of paths) lines.push(`mv '${stage}/${p}' '${dir}/${p}'`)
-	lines.push(`rm -rf '${stage}'`)
-	return lines.join('\n')
-}
-
-function parentDir(path: string): string {
-	return path.slice(0, path.lastIndexOf('/'))
+	return [
+		`rm -rf '${stage}'`,
+		`mkdir -p '${stage}'`,
+		`cat > '${list}' <<'FERMI_RUNNER_PIN'`,
+		...paths.map((p) => `${pin.files[p]}  ${p}`),
+		'FERMI_RUNNER_PIN',
+		// --retry: large fleets boot in bursts and GitHub's raw CDN throttles them
+		// (2 of 100 boxes died to this on 2026-09-07). Retries cover transient
+		// throttling; the sha256 gate still catches anything short or tampered.
+		`while read -r _ p; do mkdir -p "$(dirname "${stage}/$p")"; curl -fsSL --retry 4 --retry-delay 3 --retry-all-errors "${base}/$p" -o "${stage}/$p"; done < '${list}'`,
+		`(cd '${stage}' && sha256sum -c .sha256 >/dev/null)`,
+		// Install only after every file verified.
+		`while read -r _ p; do mkdir -p "$(dirname "${dir}/$p")"; mv "${stage}/$p" "${dir}/$p"; done < '${list}'`,
+		`rm -rf '${stage}'`,
+	].join('\n')
 }
