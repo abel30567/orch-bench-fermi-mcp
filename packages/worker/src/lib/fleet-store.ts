@@ -298,3 +298,84 @@ export async function listCloudAgents(
 		.all<CloudAgentRow>()
 	return results
 }
+
+/** Consecutive same-status `harness api_error` failures that mark a route unavailable. */
+export const ROUTE_API_ERROR_THRESHOLD = 3
+
+export const FLEET_ROUTES: CloudAgentRow['route'][] = ['claude', 'codex', 'grok']
+
+export interface RouteHealth {
+	unavailable: boolean
+	consecutive_api_errors: number
+	api_error_status: string | null
+	last_error: string | null
+	since: number | null
+}
+
+const API_ERROR_RE = /^\s*harness api_error\s+([A-Za-z0-9_.-]+)/
+
+/** Parses a `harness api_error <status>` exit reason; null for anything else. */
+export function parseApiErrorStatus(exitReason: string | null | undefined): string | null {
+	if (!exitReason) return null
+	const m = API_ERROR_RE.exec(exitReason)
+	return m ? (m[1] as string) : null
+}
+
+/**
+ * Route health from its most recently ended agents: a streak of failures with
+ * the same `harness api_error <status>` exit reason, newest first. Any other
+ * outcome (success, different failure, different status) ends the streak.
+ * `since` is the ended_at of the oldest agent in the current streak.
+ */
+export function routeHealth(
+	agents: Pick<CloudAgentRow, 'route' | 'status' | 'exit_reason' | 'ended_at'>[],
+	route: string,
+): RouteHealth {
+	const ended = agents
+		.filter((a) => a.route === route && a.ended_at != null)
+		.sort((a, b) => (b.ended_at as number) - (a.ended_at as number))
+	let count = 0
+	let status: string | null = null
+	let lastError: string | null = null
+	let since: number | null = null
+	for (const a of ended) {
+		const s = a.status === 'failed' ? parseApiErrorStatus(a.exit_reason) : null
+		if (s === null) break
+		if (status === null) {
+			status = s
+			lastError = a.exit_reason
+		} else if (s !== status) break
+		count++
+		since = a.ended_at
+	}
+	return {
+		unavailable: count >= ROUTE_API_ERROR_THRESHOLD,
+		consecutive_api_errors: count,
+		api_error_status: status,
+		last_error: lastError,
+		since,
+	}
+}
+
+/** Most recently ended agents for a route (input for routeHealth). */
+export async function listRecentEndedAgents(
+	db: D1Database,
+	route: CloudAgentRow['route'],
+	limit = 20,
+): Promise<CloudAgentRow[]> {
+	const { results } = await db
+		.prepare(
+			'SELECT * FROM cloud_agents WHERE route = ?1 AND ended_at IS NOT NULL ORDER BY ended_at DESC LIMIT ?2',
+		)
+		.bind(route, limit)
+		.all<CloudAgentRow>()
+	return results
+}
+
+export async function listRouteHealth(db: D1Database): Promise<Record<string, RouteHealth>> {
+	const out: Record<string, RouteHealth> = {}
+	for (const route of FLEET_ROUTES) {
+		out[route] = routeHealth(await listRecentEndedAgents(db, route), route)
+	}
+	return out
+}
