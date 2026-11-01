@@ -7,6 +7,7 @@ Core utilities and data stores used across the worker.
 - **memory-store.ts** — CRUD for memories with FTS5 indexing
 - **skills-store.ts** — R2 read/write for SKILL.md files + Vectorize semantic index
 - **usage-store.ts** — Per-tool analytics: call counts, success/denied, timestamps
+- **approval-store.ts** — Approval tokens in D1: mint, atomic single-use redeem (300 s expiry)
 - **secrets-store.ts** — Encrypted vault: allowed_hosts, allowed_capabilities enforcement
 - **session-store.ts** / **session.ts** — Session lifecycle and message history
 - **browser-session-store.ts** / **browser-store.ts** — Browser session persistence
