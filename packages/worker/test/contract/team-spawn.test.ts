@@ -76,20 +76,41 @@ describeTool('team_spawn', () => {
 		expect(row?.ended_at).toBeGreaterThan(0)
 	})
 
-	// Documents current behaviour: allowed_tools is accepted but ignored, so the
-	// subagent is offered the same tool set either way (follow-up filed in the PR).
-	it('ignores allowed_tools: the subagent gets the full inference tool set', async () => {
-		const unrestricted = anthropic('ok')
+	it('without allowed_tools offers the full curated inference tool set', async () => {
+		const seen = anthropic('ok')
 		await client.callTool('team_spawn', { role: 'writer', instructions: 'Draft a note' })
-		const restricted = anthropic('ok')
-		await client.callTool('team_spawn', {
+		expect(seen[0].body.tools.map((t) => t.name)).toEqual([
+			'memory_recall',
+			'memory_write',
+			'search',
+			'fs_read',
+			'fs_list',
+		])
+	})
+
+	it('honours allowed_tools: the subagent is offered only the intersection', async () => {
+		const seen = anthropic('ok')
+		const result = await client.callTool('team_spawn', {
 			role: 'writer',
 			instructions: 'Draft a note',
 			allowed_tools: ['memory_recall'],
 		})
-		const names = (r: MessagesRequest[]) => r[0].body.tools.map((t) => t.name)
-		expect(names(restricted)).toEqual(names(unrestricted))
-		expect(names(restricted)).toContain('memory_write')
+		expect(result.isError).toBeFalsy()
+		expect(seen).toHaveLength(1)
+		expect(seen[0].body.tools.map((t) => t.name)).toEqual(['memory_recall'])
+	})
+
+	it('rejects an unknown allowed_tools name and calls no model', async () => {
+		const result = await client.callTool('team_spawn', {
+			role: 'writer',
+			instructions: 'Draft a note',
+			allowed_tools: ['memory_recall', 'shell_exec'],
+		})
+		expect(result.isError).toBe(true)
+		expect(result.content[0].text).toMatch(/Unknown tool name\(s\) in allowed_tools: shell_exec/)
+		expect(await env.FERMI_DB.prepare('SELECT COUNT(*) AS n FROM team_spawns').first()).toEqual({
+			n: 0,
+		})
 	})
 
 	it('refuses to spawn past team:max_concurrent and calls no model', async () => {

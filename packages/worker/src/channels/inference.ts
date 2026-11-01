@@ -14,6 +14,14 @@ export interface ChannelContext {
 	slackChannel?: string
 }
 
+export interface AgentTurnOptions {
+	/**
+	 * Restrict the subagent to these tool names. The offered tool list is the
+	 * intersection of the curated set and this list. Omit for the full curated set.
+	 */
+	allowedTools?: string[]
+}
+
 const SYSTEM_PROMPT =
 	'You are Fermi, a personal AI agent. Use the available tools to help the user. Be concise.'
 
@@ -83,6 +91,14 @@ function getToolDefinitions(): Tool[] {
 			},
 		},
 	]
+}
+
+/** Names of the curated tools the inference loop can offer. */
+export const CURATED_TOOL_NAMES: readonly string[] = getToolDefinitions().map((t) => t.name)
+
+/** Names in `requested` that are not part of the curated inference tool set. */
+export function unknownToolNames(requested: readonly string[]): string[] {
+	return requested.filter((name) => !CURATED_TOOL_NAMES.includes(name))
 }
 
 /**
@@ -170,7 +186,16 @@ export async function runAgentTurn(
 	message: string,
 	env: Env,
 	_channel: ChannelContext,
+	options: AgentTurnOptions = {},
 ): Promise<string> {
+	const allowed = options.allowedTools
+	if (allowed) {
+		const unknown = unknownToolNames(allowed)
+		if (unknown.length > 0) {
+			throw new Error(`Unknown tool name(s) in allowed_tools: ${unknown.join(', ')}`)
+		}
+	}
+
 	// Budget check — fallback to Workers AI if over budget
 	if (await isOverBudget(env.FERMI_KV)) {
 		return runWorkersFallback(message, env)
@@ -182,7 +207,10 @@ export async function runAgentTurn(
 	}
 
 	const client = new Anthropic({ apiKey, baseURL: apiBase(env, 'ANTHROPIC_API_BASE') })
-	const tools = getToolDefinitions()
+	const tools = allowed
+		? getToolDefinitions().filter((t) => allowed.includes(t.name))
+		: getToolDefinitions()
+	const toolNames = new Set(tools.map((t) => t.name))
 	const messages: MessageParam[] = [{ role: 'user', content: message }]
 
 	const MAX_TURNS = 8
@@ -192,7 +220,7 @@ export async function runAgentTurn(
 			model: 'claude-haiku-4-5-20251001',
 			max_tokens: 4096,
 			system: SYSTEM_PROMPT,
-			tools,
+			...(tools.length > 0 ? { tools } : {}),
 			messages,
 		})
 
@@ -207,11 +235,9 @@ export async function runAgentTurn(
 			const toolResults: ToolResultBlockParam[] = []
 			for (const block of response.content) {
 				if (block.type === 'tool_use') {
-					const result = await executeToolByName(
-						block.name,
-						block.input as Record<string, unknown>,
-						env,
-					)
+					const result = toolNames.has(block.name)
+						? await executeToolByName(block.name, block.input as Record<string, unknown>, env)
+						: JSON.stringify({ error: `Tool not allowed: ${block.name}` })
 					toolResults.push({
 						type: 'tool_result',
 						tool_use_id: block.id,
