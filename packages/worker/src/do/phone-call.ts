@@ -693,12 +693,16 @@ export class PhoneCallDO extends DurableObject<Env> {
 		}
 		if (record.notify) {
 			try {
-				await enqueueTask(this.env.FERMI_DB, {
-					channel: record.notify.channel,
-					sender: `phone:${record.id}`,
-					chatId: record.notify.chat_id,
-					payload: buildNotifyPayload(record),
-				})
+				await enqueueTask(
+					this.env.FERMI_DB,
+					{
+						channel: record.notify.channel,
+						sender: `phone:${record.id}`,
+						chatId: record.notify.chat_id,
+						payload: buildNotifyPayload(record),
+					},
+					{ env: this.env, ctx: this.ctx },
+				)
 				await wakeMacDaemon(this.env)
 			} catch (e) {
 				logCallEvent(record, 'notify_error', err(e))
