@@ -114,10 +114,10 @@ sequenceDiagram
     participant W as Worker
     participant B as Booting box
     participant GH as raw.githubusercontent.com
-    Op->>W: fleetctl pin-runner (ref + sha256 → fleet:config)
+    Op->>W: fleetctl pin-runner (ref + {path: sha256} manifest → fleet:config)
     Note over W: launch REFUSES while unpinned
-    B->>GH: fetch box-runner.mjs @pinned ref (curl --retry 4)
-    B->>B: sha256 verify
+    B->>GH: fetch every pinned file @pinned ref (curl --retry 4)
+    B->>B: sha256 verify each file
     alt match
         B->>B: install, run
     else mismatch
@@ -141,6 +141,6 @@ flowchart LR
 - Cookies decrypt in exactly one process (the Mac executor). Boxes see handles and op results.
 - A box's token opens `/box/*` for that box only — never `/admin/*`, never another box's ops.
 - `done` is a claim until the proof contract verifies; honest failure is always accepted.
-- Nothing boots on a box that doesn't hash to the pinned sha256.
+- Nothing boots on a box unless every pinned file hashes to its pinned sha256.
 - Fleet queues (`agent:*`, `broker:*`) are invisible to the channel drain.
 - Every tool call, approval, and secret resolution leaves an audit row.
