@@ -162,7 +162,10 @@ Notes on the real behaviour:
 - An approval token is **bound to the tool and arguments that minted it**: redeeming
   it for another tool, or with different arguments, is denied. A token redeems at
   most once and expires after 300 s.
-- Every denial, including a plan-mode denial, writes one `denied` audit row.
+- A plan-mode denial, an invalid/expired/mismatched token, a `tool:before` hook
+  deny and a handler error each write one `denied` audit row. One exception: a
+  high-risk codemode capability called without a token (`require_token` policy)
+  returns `requires_approval` without writing an audit row.
 - `execute` additionally screens its code through a shell blocklist
   (`src/lib/shell-blocklist.ts`) before anything runs.
 - Audit rows are the substrate for `usage_stats`, which aggregates call counts,
