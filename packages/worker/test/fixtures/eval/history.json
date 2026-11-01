@@ -1,0 +1,42 @@
+{
+	"profile": {
+		"agent": "Eval instance. Reply in the channel the task came from.",
+		"user": "Name: Eval Owner. Prefers short answers."
+	},
+	"allowlist": [{ "channel": "tg", "sender_id": "1000001", "note": "owner" }],
+	"channel": "tg",
+	"chat_id": "1000001",
+	"sender": "1000001",
+	"history": [
+		{
+			"role": "user",
+			"text": "Call the dentist and book a cleaning next week.",
+			"minutes_ago": 25
+		},
+		{
+			"role": "assistant",
+			"text": "Calling Dr. Example at +15555550100 now to book a cleaning.",
+			"minutes_ago": 24
+		},
+		{
+			"role": "assistant",
+			"text": "The line was busy, nobody picked up. Want me to try again later?",
+			"minutes_ago": 20
+		},
+		{ "role": "user", "text": "Yes, morning slots only please.", "minutes_ago": 18 },
+		{
+			"role": "assistant",
+			"text": "Noted: morning appointments only. I will retry the dentist shortly.",
+			"minutes_ago": 17
+		}
+	],
+	"tasks": [
+		{
+			"id": "eval-task-redial",
+			"channel": "tg",
+			"sender": "1000001",
+			"chat_id": "1000001",
+			"payload": "Try the dentist again."
+		}
+	]
+}
