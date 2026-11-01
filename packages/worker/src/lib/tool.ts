@@ -69,14 +69,32 @@ export interface RunWithGuardrailsOpts<R> {
 	handler: (args: Record<string, unknown>) => Promise<R>
 }
 
+/** True when a stored approval record was minted for this exact tool and args hash. */
+function approvalMatches(stored: string, tool: string, argsHash: string): boolean {
+	try {
+		const record = JSON.parse(stored) as { tool?: unknown; args_hash?: unknown }
+		return record.tool === tool && record.args_hash === argsHash
+	} catch {
+		return false
+	}
+}
+
 export async function runWithGuardrails<R>(
 	opts: RunWithGuardrailsOpts<R>,
 ): Promise<GuardrailResult<R>> {
 	const { def, args, env, agentState, approvalToken, planModeExempt, approvalPolicy, handler } =
 		opts
-	const argsHash = await hashArgs(args)
+	const { approval_token: _ignored, ...hashedArgs } = args
+	const argsHash = await hashArgs(hashedArgs)
 
 	if (agentState?.mode === 'plan' && def.mutates && !planModeExempt) {
+		await writeAudit(env.FERMI_DB, {
+			tool: def.name,
+			args_hash: argsHash,
+			outcome: 'denied',
+			risk: def.risk,
+			session_id: agentState.sessionId,
+		})
 		return {
 			kind: 'denied',
 			reason: 'plan_mode_restricted',
@@ -108,8 +126,10 @@ export async function runWithGuardrails<R>(
 			return { kind: 'pending_approval', token }
 		}
 
+		// A token is bound to the tool and args that minted it (argsHash excludes
+		// `approval_token`). A mismatch is denied without consuming the token.
 		const stored = await env.FERMI_KV.get(`approval:${approvalToken}`)
-		if (!stored) {
+		if (!stored || !approvalMatches(stored, def.name, argsHash)) {
 			await writeAudit(env.FERMI_DB, {
 				tool: def.name,
 				args_hash: argsHash,

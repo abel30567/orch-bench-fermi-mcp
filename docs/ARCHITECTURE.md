@@ -134,14 +134,18 @@ The guardrail pipeline, in order:
       ▼
   1. PLAN-MODE CHECK
      If agent mode == "plan" and tool mutates and tool is not
-     {plan_draft, plan_approve, session_set_mode}  → denied (plan_mode_restricted)
+     {plan_draft, plan_approve, session_set_mode}  → audit "denied",
+                                                     denied (plan_mode_restricted)
       │
       ▼
   2. APPROVAL GATE  (only when risk == "high")
      No token  → mint UUID token, store {tool, args_hash} in KV (TTL 300s),
                  audit "pending", return pending_approval to the caller
-     Token     → must still exist in KV → delete it (single use) → continue
-                 (existence is checked; the stored args_hash is not re-compared)
+     Token     → must still exist in KV AND its stored tool == this tool AND its
+                 stored args_hash == hash(call args minus approval_token)
+                 → delete it (single use) → continue
+                 otherwise → audit "denied", invalid_or_expired_token
+                 (a mismatch does not consume the token)
       │
       ▼
   3. PRE-HOOKS  ("tool:before")
@@ -155,9 +159,13 @@ The guardrail pipeline, in order:
 
 Notes on the real behaviour:
 
-- The approval gate keys on **token presence**, not on the arguments matching the
-  ones that produced the token. The `args_hash` is stored for audit, not re-verified
-  on redemption.
+- An approval token is **bound to the tool and arguments that minted it**: redeeming
+  it for another tool, or with different arguments, is denied. A token redeems at
+  most once and expires after 300 s.
+- A plan-mode denial, an invalid/expired/mismatched token, a `tool:before` hook
+  deny and a handler error each write one `denied` audit row. One exception: a
+  high-risk codemode capability called without a token (`require_token` policy)
+  returns `requires_approval` without writing an audit row.
 - `execute` additionally screens its code through a shell blocklist
   (`src/lib/shell-blocklist.ts`) before anything runs.
 - Audit rows are the substrate for `usage_stats`, which aggregates call counts,
