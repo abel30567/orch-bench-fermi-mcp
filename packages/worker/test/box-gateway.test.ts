@@ -284,6 +284,26 @@ describe('box gateway', () => {
 		})
 	})
 
+	it('serves a named account token under the standard name, never falling back', async () => {
+		await setupSecretsSchema()
+		await clearSecrets()
+		await putSecret({ name: 'CLAUDE_CODE_OAUTH_TOKEN', scope: 'app', value: 'default' }, env)
+		await seedBoxAndAgent()
+		await env.FERMI_DB.prepare('UPDATE cloud_agents SET account = ?1 WHERE id = ?2')
+			.bind('work_2', AGENT_ID)
+			.run()
+
+		const missing = await handleBoxInferenceAuth(req('/box/inference-auth'), env)
+		expect(missing.status).toBe(409)
+		expect(await missing.json()).toMatchObject({ missing: ['CLAUDE_CODE_OAUTH_TOKEN_WORK_2'] })
+
+		await putSecret({ name: 'CLAUDE_CODE_OAUTH_TOKEN_WORK_2', scope: 'app', value: 'alt' }, env)
+		const ok = await handleBoxInferenceAuth(req('/box/inference-auth'), env)
+		expect(ok.status).toBe(200)
+		const body = (await ok.json()) as { secrets: Record<string, string> }
+		expect(body.secrets).toEqual({ CLAUDE_CODE_OAUTH_TOKEN: 'alt' })
+	})
+
 	it('serves GITHUB_TOKEN only to missions whose task payload names a repo', async () => {
 		await setupSecretsSchema()
 		await clearSecrets()

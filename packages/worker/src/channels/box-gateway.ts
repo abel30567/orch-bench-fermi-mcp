@@ -1,6 +1,8 @@
 import { accruedCostUsd } from '../lib/fleet-config.ts'
 import type { BoxRow } from '../lib/fleet-store.ts'
 import {
+	CLAUDE_TOKEN_SECRET,
+	accountTokenSecret,
 	getBox,
 	getCloudAgent,
 	heartbeatBox,
@@ -20,7 +22,7 @@ import {
 // Inference credentials live in Fermi secrets; boxes fetch them at boot and
 // write refreshed OAuth bundles back so rotation never strands the fleet.
 const ROUTE_SECRETS: Record<string, string[]> = {
-	claude: ['CLAUDE_CODE_OAUTH_TOKEN'],
+	claude: [CLAUDE_TOKEN_SECRET],
 	codex: ['CPA_AUTH_CODEX', 'CPA_API_KEY'],
 	grok: ['CPA_AUTH_XAI', 'CPA_API_KEY'],
 }
@@ -216,7 +218,9 @@ export async function handleBoxComplete(request: Request, env: Env): Promise<Res
  * Hand a box the credentials for its inference route. claude → a dedicated
  * long-lived Claude Code OAuth token (claude setup-token). codex/grok → the
  * CLIProxyAPI auth bundle the box runs LOCALLY, talking straight to the
- * provider — the Mac is never an exposed proxy.
+ * provider — the Mac is never an exposed proxy. An agent launched on a named
+ * Claude account gets that account's token under the standard name, so the box
+ * runner is account-unaware; it never falls back to the default account.
  */
 export async function handleBoxInferenceAuth(request: Request, env: Env): Promise<Response> {
 	const box = await authBox(request, env)
@@ -241,9 +245,11 @@ export async function handleBoxInferenceAuth(request: Request, env: Env): Promis
 	const values: Record<string, string> = {}
 	const missing: string[] = []
 	for (const name of names) {
-		const secret = await getSecret(name, 'app', '', env)
+		const source =
+			name === CLAUDE_TOKEN_SECRET && agent.account ? accountTokenSecret(agent.account) : name
+		const secret = await getSecret(source, 'app', '', env)
 		if (secret) values[name] = secret.value
-		else missing.push(name)
+		else missing.push(source)
 	}
 	if (missing.length > 0) {
 		return Response.json(

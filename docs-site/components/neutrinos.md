@@ -30,6 +30,7 @@ stateDiagram-v2
   "prompt": "Add a gradient() function to testbed with tests",
   "proof_contract": "{\"kind\":\"artifact\",\"name\":\"out.diff\",\"min_bytes\":1}",
   "route": "claude",          // or "codex" | "grok"
+  "account": "work",           // optional, claude only: use CLAUDE_CODE_OAUTH_TOKEN_WORK
   "budget_usd": 0.25,          // soft cap, EC2 wall-clock only
   "ttl_seconds": 3600,
   "skills": ["github-api"],    // Fermi skills preloaded into the box context
@@ -63,6 +64,7 @@ Legacy free-text contracts are grandfathered; new launches should always pass st
 |-------|-----|----------|
 | AWS access key pair | `RunInstances`/`TerminateInstances`/`DescribeInstances` | IAM policy limited to those actions, one region, your fleet security group |
 | `CLAUDE_CODE_OAUTH_TOKEN` in Fermi secrets | boxes inference on your existing Claude subscription — **inference is not billed to the budget**, EC2 wall-clock is | it's your sub; rotate from your Anthropic account |
+| `CLAUDE_CODE_OAUTH_TOKEN_<ACCOUNT>` in Fermi secrets (optional) | a launch with `account` runs on that Claude account; the box receives it as `CLAUDE_CODE_OAUTH_TOKEN`. Health reports per account as `routes["claude:<account>"]` in `/admin/fleet/status` | one secret per account; a launch fails with `account_token_not_configured` if it is missing |
 | `GITHUB_TOKEN` in Fermi secrets | clone/push/PR | fine-grained token, only the repos agents work |
 | `fleet:config` in KV | region, instance type, `allowed_instance_types`, `max_concurrent`, `monthly_budget_usd`, `runner_ref`+`runner_sha256`, TTLs | `GET`/`POST /admin/fleet/config` (bearer) for the operator fields; `pin-runner` for the pin |
 
