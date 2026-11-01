@@ -13,14 +13,16 @@ Nothing went wrong. That's not reassurance — it's the shape of supply-chain ri
 The runner is now pinned. The operator sets a specific commit ref *and* its sha256 into `fleet:config`; boxes fetch that exact ref and **verify the hash before executing a byte**:
 
 ```
-fleetctl pin-runner   # writes runner_ref + runner_sha256
+fleetctl pin-runner   # writes runner_ref + runner_files {path: sha256} (+ legacy runner_sha256)
 ```
 
 Three properties, all fail-closed:
 
 1. **Launch refuses while unpinned.** No pin, no fleet. You cannot accidentally run the unprotected path; the safe path is the only path.
 2. **Hash mismatch aborts.** If the fetched file doesn't match the pin — tampered, truncated, wrong ref — the box runs *nothing* and reports the failure. A wrong runner is a non-event, not a compromise.
-3. **The tamper case is a test.** `test/shell/boot-pin-harness.sh` serves a tampered file and asserts the boot fails closed with nothing installed. The guarantee is executable, not aspirational.
+3. **The tamper case is a test.** `test/shell/boot-pin-harness.sh` tampers with or omits each file of a multi-file manifest in turn and asserts the boot fails closed with nothing installed (and that a legacy single-file pin still boots). The guarantee is executable, not aspirational.
+
+The pin is a manifest, not a single file: `POST /admin/fleet/pin-runner` takes `{ ref, files? }` (a path list, or a `{ path: sha256 }` map that must match what is fetched; `box-runner.mjs` is always included), so the runner can import shared daemon modules (`harness/`, `lib/`). Boot fetches every file into the same relative layout, verifies every hash, and only then installs any of them. A pin with only `runner_sha256` still works as a one-file manifest.
 
 The retry from [the 100-agent run](/blog/05-hundred-agents) lives here too: `curl --retry 4 --retry-delay 3 --retry-all-errors`, so a CDN hiccup is a slow boot, not a dead box — availability and integrity in the same few lines.
 
