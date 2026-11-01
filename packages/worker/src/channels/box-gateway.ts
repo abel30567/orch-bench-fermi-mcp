@@ -24,6 +24,13 @@ const ROUTE_SECRETS: Record<string, string[]> = {
 	codex: ['CPA_AUTH_CODEX', 'CPA_API_KEY'],
 	grok: ['CPA_AUTH_XAI', 'CPA_API_KEY'],
 }
+const CLAUDE_TOKEN = 'CLAUDE_CODE_OAUTH_TOKEN'
+export const ACCOUNT_ID_RE = /^[a-z][a-z0-9_]{0,31}$/
+
+/** Secret holding the Claude OAuth token for an alternate account. */
+export function claudeAccountSecretName(account: string): string {
+	return `${CLAUDE_TOKEN}_${account.toUpperCase()}`
+}
 const WRITABLE_AUTH_SECRETS = new Set(['CPA_AUTH_CODEX', 'CPA_AUTH_XAI'])
 
 export async function sha256Hex(value: string): Promise<string> {
@@ -238,12 +245,16 @@ export async function handleBoxInferenceAuth(request: Request, env: Env): Promis
 		} catch {}
 	}
 
+	// Alternate account: read CLAUDE_CODE_OAUTH_TOKEN_<ACCOUNT> but serve it
+	// under the standard name so the box runner is unchanged.
+	const account = agent.route === 'claude' ? agent.account : null
 	const values: Record<string, string> = {}
 	const missing: string[] = []
 	for (const name of names) {
-		const secret = await getSecret(name, 'app', '', env)
+		const source = account && name === CLAUDE_TOKEN ? claudeAccountSecretName(account) : name
+		const secret = await getSecret(source, 'app', '', env)
 		if (secret) values[name] = secret.value
-		else missing.push(name)
+		else missing.push(source)
 	}
 	if (missing.length > 0) {
 		return Response.json(

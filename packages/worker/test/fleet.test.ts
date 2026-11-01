@@ -401,3 +401,23 @@ describe('routeHealth (#47)', () => {
 		})
 	})
 })
+
+describe('routeHealth per account', () => {
+	const agent = (p: Partial<CloudAgentRow>): CloudAgentRow =>
+		({ route: 'claude', status: 'failed', ended_at: 1, exit_reason: null, ...p }) as CloudAgentRow
+	const cap = 'harness api_error 429: spend limit'
+
+	it('scopes the streak to one account; default excludes alternate accounts', () => {
+		const agents = [
+			agent({ ended_at: 30, exit_reason: cap, account: 'alt' }),
+			agent({ ended_at: 20, exit_reason: cap, account: 'alt' }),
+			agent({ ended_at: 10, exit_reason: cap, account: 'alt' }),
+			agent({ ended_at: 5, status: 'done', exit_reason: 'completed', account: null }),
+		]
+		expect(routeHealth(agents, 'claude')).toMatchObject({ unavailable: false })
+		expect(routeHealth(agents, 'claude', 'alt')).toMatchObject({
+			unavailable: true,
+			consecutive_api_errors: 3,
+		})
+	})
+})

@@ -1,3 +1,4 @@
+import { ACCOUNT_ID_RE, claudeAccountSecretName } from '../channels/box-gateway.ts'
 import { fleetRelease, fleetReserve } from '../do/fleet-do.ts'
 import {
 	accruedCostUsd,
@@ -8,6 +9,7 @@ import {
 import { createCloudAgent, getBox } from './fleet-store.ts'
 import { parseProofContract } from './proof-contract.ts'
 import { type ProvisionOutcome, dispatchProvision } from './provisioner.ts'
+import { getSecret } from './secrets-store.ts'
 import { enqueueTask } from './task-store.ts'
 
 export interface LaunchInput {
@@ -25,6 +27,8 @@ export interface LaunchInput {
 	parent_task_id?: string
 	/** EC2 size for this launch; must be in fleet:config.allowed_instance_types (#43). */
 	instance_type?: string
+	/** Alternate Claude account (claude route only); token in CLAUDE_CODE_OAUTH_TOKEN_<ACCOUNT>. */
+	account?: string
 }
 
 export type LaunchResult =
@@ -45,6 +49,19 @@ export async function launchCloudAgent(env: Env, input: LaunchInput): Promise<La
 	const proof = parseProofContract(input.proof_contract)
 	if (!proof.ok) {
 		return { ok: false, error: `invalid_proof_contract: ${proof.error}` }
+	}
+
+	if (input.account != null) {
+		if ((input.route ?? 'claude') !== 'claude') {
+			return { ok: false, error: 'account_requires_claude_route' }
+		}
+		if (typeof input.account !== 'string' || !ACCOUNT_ID_RE.test(input.account)) {
+			return { ok: false, error: 'invalid_account' }
+		}
+		const secretName = claudeAccountSecretName(input.account)
+		if (!(await getSecret(secretName, 'app', '', env))) {
+			return { ok: false, error: 'account_token_not_configured', secret: secretName }
+		}
 	}
 
 	const config = await getFleetConfig(env)
@@ -108,6 +125,7 @@ export async function launchCloudAgent(env: Env, input: LaunchInput): Promise<La
 		budgetUsd: input.budget_usd,
 		ttlSeconds: input.ttl_seconds,
 		instanceType: input.box_id ? undefined : sizing.instance_type,
+		account: input.account,
 	})
 	const provision = await dispatchProvision(env, created)
 	// If no compute was dispatched (provisioner error, not a targeted box), free
