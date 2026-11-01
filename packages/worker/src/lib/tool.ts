@@ -1,6 +1,7 @@
 import { z } from 'zod'
 import type { FermiMCP } from '../mcp/index.ts'
 import { executeHooks } from '../orchestration/hooks.ts'
+import { mintApprovalToken, redeemApprovalToken } from './approval-store.ts'
 import { hashArgs, measureResultBytes, writeAudit } from './audit.ts'
 import { isBoxAllowedTool } from './box-scope.ts'
 
@@ -100,12 +101,7 @@ export async function runWithGuardrails<R>(
 					details: { tool: def.name, scope: def.scope, risk: def.risk },
 				}
 			}
-			const token = crypto.randomUUID()
-			await env.FERMI_KV.put(
-				`approval:${token}`,
-				JSON.stringify({ tool: def.name, args_hash: argsHash }),
-				{ expirationTtl: 300 },
-			)
+			const token = await mintApprovalToken(env.FERMI_DB, def.name, argsHash)
 			await writeAudit(env.FERMI_DB, {
 				tool: def.name,
 				args_hash: argsHash,
@@ -117,11 +113,7 @@ export async function runWithGuardrails<R>(
 
 		// A token is bound to the exact tool and args it was minted for. `args` never
 		// carries approval_token (defineTool strips it), so the hashes are comparable.
-		const stored = await env.FERMI_KV.get<{ tool: string; args_hash: string }>(
-			`approval:${approvalToken}`,
-			'json',
-		)
-		if (!stored || stored.tool !== def.name || stored.args_hash !== argsHash) {
+		if (!(await redeemApprovalToken(env.FERMI_DB, approvalToken, def.name, argsHash))) {
 			await writeAudit(env.FERMI_DB, {
 				tool: def.name,
 				args_hash: argsHash,
@@ -130,7 +122,6 @@ export async function runWithGuardrails<R>(
 			})
 			return { kind: 'denied', reason: 'invalid_or_expired_token' }
 		}
-		await env.FERMI_KV.delete(`approval:${approvalToken}`)
 	}
 
 	const hookCtx = { tool: def.name, args }
