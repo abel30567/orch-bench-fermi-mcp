@@ -7,11 +7,14 @@ import {
 	updateFleetConfig,
 	validateFleetConfigPatch,
 } from '../src/lib/fleet-config.ts'
+import { launchCloudAgent } from '../src/lib/fleet-launch.ts'
 import {
+	accountTokenSecretName,
 	createCloudAgent,
 	getBox,
 	getCloudAgent,
 	heartbeatBox,
+	isValidAccountId,
 	listCloudAgents,
 	registerBox,
 	routeHealth,
@@ -31,9 +34,11 @@ import { agentStall, cloudAgentLaunchSchema } from '../src/mcp/tools/cloud-agent
 import {
 	clearAudit,
 	clearFleet,
+	clearSecrets,
 	clearTasks,
 	setupAuditSchema,
 	setupFleetSchema,
+	setupSecretsSchema,
 	setupSkillsSchema,
 	setupTasksSchema,
 } from './setup-d1.ts'
@@ -379,6 +384,24 @@ describe('routeHealth (#47)', () => {
 		})
 	})
 
+	it('scopes health per Claude account; the default covers unaccounted agents only', () => {
+		const agents = [
+			agent({ ended_at: 30, exit_reason: cap, account: 'work' }),
+			agent({ ended_at: 20, exit_reason: cap, account: 'work' }),
+			agent({ ended_at: 10, exit_reason: cap, account: 'work' }),
+			agent({ ended_at: 5, status: 'done', exit_reason: 'completed', account: null }),
+		]
+		expect(routeHealth(agents, 'claude', 'work')).toMatchObject({
+			unavailable: true,
+			consecutive_api_errors: 3,
+		})
+		expect(routeHealth(agents, 'claude')).toMatchObject({
+			unavailable: false,
+			consecutive_api_errors: 0,
+		})
+		expect(routeHealth(agents, 'claude', 'other')).toMatchObject({ consecutive_api_errors: 0 })
+	})
+
 	it('resets the streak on a different status or a non-API failure, and ignores ordering of input', () => {
 		const mixed = [
 			agent({ ended_at: 10, exit_reason: cap }),
@@ -399,5 +422,50 @@ describe('routeHealth (#47)', () => {
 			consecutive_api_errors: 0,
 			api_error_status: null,
 		})
+	})
+})
+
+describe('launchCloudAgent account (alternate Claude account)', () => {
+	const contract = JSON.stringify({ kind: 'artifact', name: 'out.diff', min_bytes: 1 })
+	const base = { prompt: 'do the account thing', proof_contract: contract }
+
+	beforeAll(async () => {
+		await setupFleetSchema()
+		await setupTasksSchema()
+		await setupSecretsSchema()
+	})
+
+	beforeEach(async () => {
+		await clearFleet()
+		await clearSecrets()
+	})
+
+	it('fails fast on a non-claude route, a malformed id, or a missing token', async () => {
+		expect(await launchCloudAgent(env, { ...base, route: 'codex', account: 'work' })).toMatchObject(
+			{ ok: false, error: 'account_requires_claude_route' },
+		)
+		for (const bad of ['Work', '1work', '', 'a'.repeat(33), 'wo-rk']) {
+			expect(await launchCloudAgent(env, { ...base, account: bad })).toMatchObject({
+				ok: false,
+				error: 'invalid_account',
+			})
+		}
+		expect(await launchCloudAgent(env, { ...base, account: 'work' })).toMatchObject({
+			ok: false,
+			error: 'account_token_not_configured',
+		})
+		expect(await listCloudAgents(env.FERMI_DB)).toHaveLength(0)
+	})
+
+	it('stores the account on the agent row', async () => {
+		const row = await createCloudAgent(env.FERMI_DB, {
+			queue: 'agent:x',
+			prompt: 'p',
+			proofContract: contract,
+			account: 'work',
+		})
+		expect(row.account).toBe('work')
+		expect(accountTokenSecretName('work_2')).toBe('CLAUDE_CODE_OAUTH_TOKEN_WORK_2')
+		expect(isValidAccountId('a'.repeat(32))).toBe(true)
 	})
 })
