@@ -1,0 +1,19 @@
+{
+	"channel": "tg",
+	"chat_id": "1000001",
+	"history": [
+		{ "role": "user", "text": "Can you call the dentist and book a cleaning?", "minutes_ago": 25 },
+		{
+			"role": "assistant",
+			"text": "Calling Dr. Example at +15555550100 now.",
+			"minutes_ago": 24
+		},
+		{
+			"role": "assistant",
+			"text": "The line was busy, so no appointment yet.",
+			"minutes_ago": 20
+		},
+		{ "role": "user", "text": "Ok, try them again in a bit.", "minutes_ago": 12 },
+		{ "role": "assistant", "text": "Will do, I'll redial shortly.", "minutes_ago": 11 }
+	]
+}
