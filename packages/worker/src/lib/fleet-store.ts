@@ -298,3 +298,92 @@ export async function listCloudAgents(
 		.all<CloudAgentRow>()
 	return results
 }
+
+export const FLEET_ROUTES: readonly CloudAgentRow['route'][] = ['claude', 'codex', 'grok']
+
+/** Streak length at which a route is flagged unavailable. */
+export const ROUTE_API_ERROR_THRESHOLD = 3
+
+const API_ERROR_RE = /^harness api_error (\S+)/
+
+export interface RouteHealth {
+	/** True when the last ROUTE_API_ERROR_THRESHOLD ended agents all failed with the same api_error status. */
+	unavailable: boolean
+	/** Length of the current streak of same-status api_error failures (most recent first). */
+	consecutive_api_errors: number
+	/** The status shared by the streak (e.g. `429`), or null when there is no streak. */
+	api_error_status: string | null
+	/** Exit reason of the most recent failure in the streak, or null. */
+	last_error: string | null
+	/** ended_at of the oldest agent in the streak (when the streak began), or null. */
+	since: number | null
+}
+
+/** Parses `harness api_error <status>` exit reasons; null for anything else. */
+export function apiErrorStatus(
+	agent: Pick<CloudAgentRow, 'status' | 'exit_reason'>,
+): string | null {
+	if (agent.status !== 'failed' || !agent.exit_reason) return null
+	return API_ERROR_RE.exec(agent.exit_reason.trim())?.[1] ?? null
+}
+
+/** Per-route health from the route's ended agents: a run of identical
+ * `harness api_error <status>` failures (spend cap, 429, auth) marks the route
+ * unavailable so orchestrators stop relaunching into it. Any other outcome
+ * (success, a different failure, a different api_error status) ends the streak. */
+export function routeHealth(
+	agents: readonly CloudAgentRow[],
+	route: CloudAgentRow['route'],
+): RouteHealth {
+	const ended = agents
+		.filter((a) => a.route === route && a.ended_at != null)
+		.sort((a, b) => (b.ended_at as number) - (a.ended_at as number))
+	let status: string | null = null
+	let count = 0
+	let lastError: string | null = null
+	let since: number | null = null
+	for (const agent of ended) {
+		const s = apiErrorStatus(agent)
+		if (s === null || (status !== null && s !== status)) break
+		if (status === null) {
+			status = s
+			lastError = agent.exit_reason
+		}
+		count++
+		since = agent.ended_at
+	}
+	return {
+		unavailable: count >= ROUTE_API_ERROR_THRESHOLD,
+		consecutive_api_errors: count,
+		api_error_status: status,
+		last_error: lastError,
+		since,
+	}
+}
+
+/** Most recently ended agents for one route (newest first), for routeHealth. */
+export async function listRecentlyEndedAgents(
+	db: D1Database,
+	route: CloudAgentRow['route'],
+	limit = 50,
+): Promise<CloudAgentRow[]> {
+	const { results } = await db
+		.prepare(
+			`SELECT * FROM cloud_agents WHERE route = ?1 AND ended_at IS NOT NULL
+			 ORDER BY ended_at DESC LIMIT ?2`,
+		)
+		.bind(route, Math.min(Math.max(limit, 1), 200))
+		.all<CloudAgentRow>()
+	return results
+}
+
+/** `routes` block for /admin/fleet/status. */
+export async function fleetRouteHealth(
+	db: D1Database,
+): Promise<Record<CloudAgentRow['route'], RouteHealth>> {
+	const out = {} as Record<CloudAgentRow['route'], RouteHealth>
+	for (const route of FLEET_ROUTES) {
+		out[route] = routeHealth(await listRecentlyEndedAgents(db, route), route)
+	}
+	return out
+}
