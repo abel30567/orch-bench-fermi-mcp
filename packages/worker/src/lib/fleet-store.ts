@@ -36,6 +36,8 @@ export interface CloudAgentRow {
 	/** Liveness (#42): last `working:` progress note, and runner restarts seen. */
 	last_working_event_at: number | null
 	restart_count: number
+	/** Alternate Claude account (claude route only); null = default account. */
+	account: string | null
 }
 
 /** Agent record plus its box's heartbeat, so clients check liveness without parsing events (#42). */
@@ -193,13 +195,14 @@ export async function createCloudAgent(
 		budgetUsd?: number
 		ttlSeconds?: number
 		instanceType?: string
+		account?: string
 	},
 ): Promise<CloudAgentRow> {
 	const id = input.id ?? `ca_${crypto.randomUUID()}`
 	await db
 		.prepare(
-			`INSERT INTO cloud_agents (id, box_id, task_id, queue, route, prompt, proof_contract, budget_usd, ttl_seconds, created_at, instance_type)
-			 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)`,
+			`INSERT INTO cloud_agents (id, box_id, task_id, queue, route, prompt, proof_contract, budget_usd, ttl_seconds, created_at, instance_type, account)
+			 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)`,
 		)
 		.bind(
 			id,
@@ -213,6 +216,7 @@ export async function createCloudAgent(
 			input.ttlSeconds ?? null,
 			Date.now(),
 			input.instanceType ?? null,
+			input.account ?? null,
 		)
 		.run()
 	return (await getCloudAgent(db, id)) as CloudAgentRow
@@ -299,6 +303,14 @@ export async function listCloudAgents(
 	return results
 }
 
+/** Alternate Claude account ids: lowercase, safe to embed in a secret name. */
+export const ACCOUNT_ID_RE = /^[a-z][a-z0-9_]{0,31}$/
+
+/** Secret holding a Claude account's OAuth token; no account = the default. */
+export function claudeTokenSecretName(account?: string | null): string {
+	return account ? `CLAUDE_CODE_OAUTH_TOKEN_${account.toUpperCase()}` : 'CLAUDE_CODE_OAUTH_TOKEN'
+}
+
 /** Consecutive same-status API failures on a route before it is flagged unavailable. */
 export const ROUTE_UNAVAILABLE_THRESHOLD = 3
 const API_ERROR_RE = /^harness api_error ([^\s:]+)/
@@ -318,10 +330,18 @@ export interface RouteHealth {
  * Fleet-wide route health from the agent list (#47): if the N most recently
  * ended agents on a route all died with the same `harness api_error <status>`
  * (spend cap, 429, auth), orchestrators should stop relaunching into it.
+ * Scoped to one account: each Claude account has its own spend cap, so an
+ * exhausted alternate account must not mark the default unavailable (or vice
+ * versa). Without `account`, only default-account agents count.
  */
-export function routeHealth(agents: CloudAgentRow[], route: CloudAgentRow['route']): RouteHealth {
+export function routeHealth(
+	agents: CloudAgentRow[],
+	route: CloudAgentRow['route'],
+	account?: string,
+): RouteHealth {
+	const scope = account ?? null
 	const ended = agents
-		.filter((a) => a.route === route && a.ended_at != null)
+		.filter((a) => a.route === route && (a.account ?? null) === scope && a.ended_at != null)
 		.sort((a, b) => (b.ended_at ?? 0) - (a.ended_at ?? 0))
 	let status: string | null = null
 	let count = 0
@@ -343,4 +363,24 @@ export function routeHealth(agents: CloudAgentRow[], route: CloudAgentRow['route
 		last_error: lastError,
 		since,
 	}
+}
+
+/**
+ * Status-endpoint route health (#47): `unavailable` when the last N ended
+ * agents on a route all failed with the same harness api_error status. Claude
+ * health is per account (each has its own spend cap): `claude` is the default
+ * account, `claude:<account>` each alternate account seen in `agents`.
+ */
+export function fleetRouteHealth(agents: CloudAgentRow[]): Record<string, RouteHealth> {
+	const routes: Record<string, RouteHealth> = {
+		claude: routeHealth(agents, 'claude'),
+		codex: routeHealth(agents, 'codex'),
+		grok: routeHealth(agents, 'grok'),
+	}
+	for (const a of agents) {
+		if (a.route === 'claude' && a.account && !routes[`claude:${a.account}`]) {
+			routes[`claude:${a.account}`] = routeHealth(agents, 'claude', a.account)
+		}
+	}
+	return routes
 }
