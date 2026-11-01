@@ -1,8 +1,12 @@
-export async function createSession(db: D1Database, host: string): Promise<string> {
+export async function createSession(
+	db: D1Database,
+	host: string,
+	at = Date.now(),
+): Promise<string> {
 	const id = crypto.randomUUID()
 	await db
 		.prepare('INSERT INTO sessions (id, host, mode, started_at) VALUES (?, ?, ?, ?)')
-		.bind(id, host, 'chat', Date.now())
+		.bind(id, host, 'chat', at)
 		.run()
 	return id
 }
@@ -19,9 +23,10 @@ export async function logMessage(
 	sessionId: string,
 	role: string,
 	body: string,
+	at = Date.now(),
 ): Promise<void> {
 	await db
 		.prepare('INSERT INTO messages (session_id, role, body, created_at) VALUES (?, ?, ?, ?)')
-		.bind(sessionId, role, body, Date.now())
+		.bind(sessionId, role, body, at)
 		.run()
 }

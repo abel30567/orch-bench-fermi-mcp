@@ -4,11 +4,15 @@ export function channelHost(channel: string, chatId: string): string {
 	return `${channel}:${chatId}`
 }
 
-/** Newest open session for this chat, creating one if none exists. */
+/**
+ * Newest open session for this chat, creating one if none exists. `at` is the
+ * new session's start time (defaults to now; eval-seed backdates it).
+ */
 export async function getOrCreateChannelSession(
 	db: D1Database,
 	channel: string,
 	chatId: string,
+	at = Date.now(),
 ): Promise<string> {
 	const host = channelHost(channel, chatId)
 	const row = await db
@@ -18,18 +22,20 @@ export async function getOrCreateChannelSession(
 		.bind(host)
 		.first<{ id: string }>()
 	if (row) return row.id
-	return createSession(db, host)
+	return createSession(db, host, at)
 }
 
+/** Log a chat turn. `at` defaults to now; eval-seed passes backdated fixture turns. */
 export async function logChannelMessage(
 	db: D1Database,
 	channel: string,
 	chatId: string,
 	role: 'user' | 'assistant',
 	body: string,
+	at = Date.now(),
 ): Promise<void> {
-	const sessionId = await getOrCreateChannelSession(db, channel, chatId)
-	await logMessage(db, sessionId, role, body)
+	const sessionId = await getOrCreateChannelSession(db, channel, chatId, at)
+	await logMessage(db, sessionId, role, body, at)
 }
 
 export interface ConversationRow {
