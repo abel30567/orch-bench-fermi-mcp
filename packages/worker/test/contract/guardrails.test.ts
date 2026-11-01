@@ -108,6 +108,58 @@ describe('MCP contract: defineTool guardrails', () => {
 		expect(replay).toEqual({ status: 'denied', reason: 'Invalid or expired approval token' })
 	})
 
+	it('20 concurrent redeems of one valid token yield exactly one success', async () => {
+		const client = await session()
+		const args = { name: 'contract_race', sql: 'SELECT 1' }
+		const pending = resultJson<{ status: string; token: string }>(
+			await client.callTool('retriever_set', args),
+		)
+		expect(pending.status).toBe('pending_approval')
+		const stored = await env.FERMI_DB.prepare(
+			'SELECT expires_at FROM approval_tokens WHERE token = ?',
+		)
+			.bind(pending.token)
+			.first<{ expires_at: number }>()
+		expect(stored?.expires_at).toBeGreaterThan(Date.now() + 290_000)
+		expect(stored?.expires_at).toBeLessThanOrEqual(Date.now() + 300_000)
+
+		// Each redeem on its own MCP session, so nothing serialises them in one Durable Object.
+		const clients = await Promise.all(Array.from({ length: 20 }, () => session()))
+		const results = await Promise.all(
+			clients.map(async (c) =>
+				resultJson<{ status: string; reason?: string }>(
+					await c.callTool('retriever_set', { ...args, approval_token: pending.token }),
+				),
+			),
+		)
+		const successes = results.filter((r) => r.status === 'stored')
+		const denials = results.filter(
+			(r) => r.status === 'denied' && r.reason === 'Invalid or expired approval token',
+		)
+		expect(successes).toHaveLength(1)
+		expect(denials).toHaveLength(19)
+		const outcomes = (await auditRows('retriever_set')).map((r) => r.outcome)
+		expect(outcomes.filter((o) => o === 'ok')).toHaveLength(1)
+		expect(outcomes.filter((o) => o === 'denied')).toHaveLength(19)
+	})
+
+	it('an expired approval token does not redeem', async () => {
+		const client = await session()
+		const args = { name: 'contract_expired', sql: 'SELECT 1' }
+		const pending = resultJson<{ status: string; token: string }>(
+			await client.callTool('retriever_set', args),
+		)
+		await env.FERMI_DB.prepare('UPDATE approval_tokens SET expires_at = ? WHERE token = ?')
+			.bind(Date.now() - 1, pending.token)
+			.run()
+		const expired = resultJson(
+			await client.callTool('retriever_set', { ...args, approval_token: pending.token }),
+		)
+		expect(expired).toEqual({ status: 'denied', reason: 'Invalid or expired approval token' })
+		const rows = await env.FERMI_DB.prepare('SELECT * FROM retrievers').all()
+		expect(rows.results).toEqual([])
+	})
+
 	it('a high-risk tool rejects a wrong token', async () => {
 		const client = await session()
 		const wrong = resultJson(
