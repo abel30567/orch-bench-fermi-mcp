@@ -64,10 +64,11 @@ export async function handleSlackBridgeWebhook(request: Request, env: Env): Prom
 			JSON.stringify({ channel: 'sl', senderId: authorId, chatId }),
 			{ expirationTtl: 3600 },
 		)
-		await sendSlackMessage(
+		await sendSlackReply(
 			env,
 			chatId,
 			`Pairing code: ${code}\nAsk the owner to approve this code.`,
+			'pairing',
 		)
 		return new Response('ok')
 	}
@@ -76,18 +77,38 @@ export async function handleSlackBridgeWebhook(request: Request, env: Env): Prom
 	if (approveMatch) {
 		const result = await approvePairing(env, approveMatch[1])
 		if (result.ok) {
-			await sendSlackMessage(env, chatId, `Approved sender ${result.senderId}.`)
-			await sendSlackMessage(env, result.chatId, "You're approved. Send me a message anytime.")
+			await sendSlackReply(env, chatId, `Approved sender ${result.senderId}.`, 'approval')
+			await sendSlackReply(
+				env,
+				result.chatId,
+				"You're approved. Send me a message anytime.",
+				'approval',
+			)
 		} else {
-			await sendSlackMessage(env, chatId, `Approval failed: ${result.error}`)
+			await sendSlackReply(env, chatId, `Approval failed: ${result.error}`, 'approval')
 		}
 		return new Response('ok')
 	}
 
 	await logChannelMessage(env.FERMI_DB, 'sl', chatId, 'user', text)
 	await enqueueTask(env.FERMI_DB, { channel: 'sl', sender: authorId, chatId, payload: text })
-	await sendSlackMessage(env, chatId, 'Got it — working on it.')
+	await sendSlackReply(env, chatId, 'Got it — working on it.', 'ack')
 	return new Response('ok')
+}
+
+/**
+ * Best-effort reply from the webhook handler. sl-bridge retries every non-2xx,
+ * so a failed send must not turn into a 500 that re-delivers (and re-enqueues)
+ * the same inbound message. Errors are logged and swallowed here only;
+ * `channel_send` / `narrate` still surface them.
+ */
+async function sendSlackReply(env: Env, channel: string, text: string, kind: string) {
+	try {
+		await sendSlackMessage(env, channel, text)
+	} catch (err) {
+		const message = err instanceof Error ? err.message : String(err)
+		console.error(`slack webhook: ${kind} send to ${channel} failed: ${message}`)
+	}
 }
 
 /**
