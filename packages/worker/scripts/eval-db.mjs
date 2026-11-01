@@ -1,6 +1,11 @@
 // SQL and MCP calls shared by eval-seed.mjs and eval-dump.mjs. No Node imports,
 // so the tests can run the same statements and calls against the test worker.
 
+import { channelHost, logChannelMessage } from '../src/lib/conversation.ts'
+
+const CHANNELS = ['tg', 'wa', 'dc', 'sl']
+const ROLES = ['user', 'assistant']
+
 const sql = (value) => {
 	if (value === null || value === undefined) return 'NULL'
 	if (typeof value === 'boolean') return value ? '1' : '0'
@@ -46,7 +51,66 @@ export function seedStatements(fixture, now = Date.now()) {
 			)
 		}
 	}
+	if (fixture.history) {
+		const { channel, chat_id } = historyTarget(fixture)
+		// The fixture's history is the whole transcript state: clear every message,
+		// and this chat's sessions so the seeded turns open a fresh one.
+		out.push('DELETE FROM messages')
+		out.push(`DELETE FROM sessions WHERE host = ${sql(channelHost(channel, chat_id))}`)
+	}
 	return out
+}
+
+/** Validated `{ channel, chat_id, history }` of a fixture with conversation history. */
+function historyTarget(fixture) {
+	const { channel, chat_id, sender, history } = fixture
+	if (!CHANNELS.includes(channel)) {
+		throw new Error(`fixture.history needs channel (one of ${CHANNELS.join(', ')})`)
+	}
+	if (typeof chat_id !== 'string' || !chat_id) throw new Error('fixture.history needs chat_id')
+	if (sender !== undefined && (typeof sender !== 'string' || !sender)) {
+		throw new Error('fixture.sender must be a non-empty string')
+	}
+	if (!Array.isArray(history)) throw new Error('fixture.history must be an array')
+	for (const [i, turn] of history.entries()) {
+		if (
+			!ROLES.includes(turn?.role) ||
+			typeof turn.text !== 'string' ||
+			typeof turn.minutes_ago !== 'number' ||
+			!(turn.minutes_ago >= 0)
+		) {
+			throw new Error(
+				`fixture.history[${i}] must be { role: "user"|"assistant", text, minutes_ago >= 0 }`,
+			)
+		}
+	}
+	return { channel, chat_id, sender, history }
+}
+
+/**
+ * Write the fixture's conversation history through the real conversation store
+ * (`logChannelMessage`, as the channel webhooks and `channel_send` do), each turn
+ * stamped `minutes_ago` before `now`. Run after seedStatements, which clears the
+ * chat. `db` is a D1 binding: the test worker's, or the eval worker's local D1.
+ * With `sender`, the turns must come from an allowlisted sender, as in production
+ * where a non-allowlisted message is never logged.
+ */
+export async function seedHistory(db, fixture, now = Date.now()) {
+	if (!fixture.history) return
+	const { channel, chat_id, sender, history } = historyTarget(fixture)
+	if (sender) {
+		const allowed = await db
+			.prepare('SELECT 1 FROM allowlist WHERE channel = ?1 AND sender_id = ?2')
+			.bind(channel, sender)
+			.first()
+		if (!allowed) {
+			throw new Error(`fixture.sender ${sender} is not on the ${channel} allowlist`)
+		}
+	}
+	for (const turn of history) {
+		const at = now - Math.round(turn.minutes_ago * 60_000)
+		await logChannelMessage(db, channel, chat_id, turn.role, turn.text, at)
+	}
 }
 
 /** One query per dumped section, in order. */
@@ -61,6 +125,12 @@ export const DUMP_QUERIES = {
 	skills:
 		'SELECT slug, name, description, keywords, allowed_tools, version, source, decayed_at FROM skills ORDER BY slug',
 	audit: 'SELECT * FROM audit ORDER BY id',
+	// Channel chat transcripts only (sessions.host = '<channel>:<chat_id>'), not
+	// the MCP sessions' tool-call log.
+	history: `SELECT s.host, m.role, m.body, m.created_at
+		FROM messages m JOIN sessions s ON m.session_id = s.id
+		WHERE substr(s.host, 1, 3) IN (${CHANNELS.map((c) => sql(`${c}:`)).join(', ')})
+		ORDER BY m.created_at, m.id`,
 }
 
 /** Shape rows (one array per DUMP_QUERIES entry, same order) like a fixture. */
@@ -69,6 +139,13 @@ export function shapeDump(rowSets) {
 	const dump = Object.fromEntries(names.map((name, i) => [name, rowSets[i] ?? []]))
 	dump.profile = Object.fromEntries(dump.profile.map((r) => [r.name, r.body]))
 	dump.memories = dump.memories.map((m) => ({ ...m, pinned: m.pinned === 1 }))
+	dump.history = dump.history.map(({ host, role, body, created_at }) => ({
+		channel: host.slice(0, 2),
+		chat_id: host.slice(3),
+		role,
+		text: body,
+		created_at,
+	}))
 	return dump
 }
 
