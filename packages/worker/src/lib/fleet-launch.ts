@@ -5,9 +5,15 @@ import {
 	monthSpendUsd,
 	resolveInstanceType,
 } from './fleet-config.ts'
-import { createCloudAgent, getBox } from './fleet-store.ts'
+import {
+	CLAUDE_ACCOUNT_RE,
+	claudeTokenSecretName,
+	createCloudAgent,
+	getBox,
+} from './fleet-store.ts'
 import { parseProofContract } from './proof-contract.ts'
 import { type ProvisionOutcome, dispatchProvision } from './provisioner.ts'
+import { getSecret } from './secrets-store.ts'
 import { enqueueTask } from './task-store.ts'
 
 export interface LaunchInput {
@@ -25,6 +31,8 @@ export interface LaunchInput {
 	parent_task_id?: string
 	/** EC2 size for this launch; must be in fleet:config.allowed_instance_types (#43). */
 	instance_type?: string
+	/** Alternate Claude account (claude route only); its token is CLAUDE_CODE_OAUTH_TOKEN_<ACCOUNT>. */
+	account?: string
 }
 
 export type LaunchResult =
@@ -45,6 +53,21 @@ export async function launchCloudAgent(env: Env, input: LaunchInput): Promise<La
 	const proof = parseProofContract(input.proof_contract)
 	if (!proof.ok) {
 		return { ok: false, error: `invalid_proof_contract: ${proof.error}` }
+	}
+
+	// Alternate Claude account: fail fast here rather than leaving a box to
+	// 409 at /box/inference-auth after compute was already paid for.
+	if (input.account != null) {
+		if ((input.route ?? 'claude') !== 'claude') {
+			return { ok: false, error: 'account_requires_claude_route', route: input.route }
+		}
+		if (typeof input.account !== 'string' || !CLAUDE_ACCOUNT_RE.test(input.account)) {
+			return { ok: false, error: 'invalid_account' }
+		}
+		const secretName = claudeTokenSecretName(input.account)
+		if (!(await getSecret(secretName, 'app', '', env))) {
+			return { ok: false, error: 'account_token_not_configured', missing: [secretName] }
+		}
 	}
 
 	const config = await getFleetConfig(env)
@@ -108,6 +131,7 @@ export async function launchCloudAgent(env: Env, input: LaunchInput): Promise<La
 		budgetUsd: input.budget_usd,
 		ttlSeconds: input.ttl_seconds,
 		instanceType: input.box_id ? undefined : sizing.instance_type,
+		account: input.account ?? undefined,
 	})
 	const provision = await dispatchProvision(env, created)
 	// If no compute was dispatched (provisioner error, not a targeted box), free
