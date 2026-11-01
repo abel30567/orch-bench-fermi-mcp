@@ -165,6 +165,72 @@ describe('MCP contract: defineTool guardrails', () => {
 		expect((await auditRows('oauth_delete_client')).map((r) => r.outcome)).toEqual(['denied'])
 	})
 
+	it('20 concurrent redeems of one token yield exactly one success', async () => {
+		const client = await session()
+		const args = { name: 'contract_r5', sql: 'SELECT 1' }
+		const { token } = resultJson<{ token: string }>(await client.callTool('retriever_set', args))
+
+		const results = await Promise.all(
+			Array.from({ length: 20 }, () =>
+				client.callTool('retriever_set', { ...args, approval_token: token }),
+			),
+		)
+
+		const outcomes = results.map((r) => resultJson<{ status: string; reason?: string }>(r))
+		expect(outcomes.filter((o) => o.status === 'stored')).toHaveLength(1)
+		expect(outcomes.filter((o) => o.status === 'denied')).toHaveLength(19)
+		for (const o of outcomes.filter((o) => o.status === 'denied')) {
+			expect(o.reason).toBe('Invalid or expired approval token')
+		}
+		const audit = (await auditRows('retriever_set')).map((r) => r.outcome)
+		expect(audit.filter((o) => o === 'ok')).toHaveLength(1)
+		expect(audit.filter((o) => o === 'denied')).toHaveLength(19)
+	})
+
+	it('an approval token expires 300 s after minting', async () => {
+		const client = await session()
+		const args = { name: 'contract_r6', sql: 'SELECT 1' }
+		const before = Date.now()
+		const { token } = resultJson<{ token: string }>(await client.callTool('retriever_set', args))
+		const after = Date.now()
+
+		const row = await env.FERMI_DB.prepare('SELECT expires_at FROM approval_tokens WHERE token = ?')
+			.bind(token)
+			.first<{ expires_at: number }>()
+		expect(row?.expires_at).toBeGreaterThanOrEqual(before + 300_000)
+		expect(row?.expires_at).toBeLessThanOrEqual(after + 300_000)
+
+		await env.FERMI_DB.prepare('UPDATE approval_tokens SET expires_at = ? WHERE token = ?')
+			.bind(Date.now() - 1, token)
+			.run()
+		const expired = resultJson(
+			await client.callTool('retriever_set', { ...args, approval_token: token }),
+		)
+		expect(expired).toEqual({ status: 'denied', reason: 'Invalid or expired approval token' })
+		expect(await env.FERMI_DB.prepare('SELECT * FROM retrievers').all()).toMatchObject({
+			results: [],
+		})
+	})
+
+	it('minting a token sweeps expired ones and keeps live ones', async () => {
+		const client = await session()
+		const args = { name: 'contract_r7', sql: 'SELECT 1' }
+		const first = resultJson<{ token: string }>(await client.callTool('retriever_set', args))
+		const second = resultJson<{ token: string }>(await client.callTool('retriever_set', args))
+		await env.FERMI_DB.prepare('UPDATE approval_tokens SET expires_at = ? WHERE token = ?')
+			.bind(Date.now() - 1, first.token)
+			.run()
+
+		const third = resultJson<{ token: string }>(await client.callTool('retriever_set', args))
+
+		const { results } = await env.FERMI_DB.prepare('SELECT token FROM approval_tokens').all<{
+			token: string
+		}>()
+		const tokens = results.map((r) => r.token)
+		expect(tokens).not.toContain(first.token)
+		expect(tokens).toEqual(expect.arrayContaining([second.token, third.token]))
+	})
+
 	it('a tool:before hook with trust deny blocks the call', async () => {
 		const client = await session()
 		const hook = resultJson<{ status: string }>(
