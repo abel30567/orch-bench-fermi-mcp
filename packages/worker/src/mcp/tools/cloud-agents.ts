@@ -59,6 +59,13 @@ export const cloudAgentLaunchSchema = {
 		.optional()
 		.default('claude')
 		.describe('Inference route for the agent harness'),
+	account: z
+		.string()
+		.regex(/^[a-z][a-z0-9_]{0,31}$/)
+		.optional()
+		.describe(
+			'Alternate Claude account id (claude route only). Uses the CLAUDE_CODE_OAUTH_TOKEN_<ACCOUNT> secret; omit for the default account.',
+		),
 	model: z.string().optional().describe('Override the route model id (e.g. gpt-6-astra)'),
 	box_id: z
 		.string()
