@@ -46,6 +46,62 @@ export function seedStatements(fixture, now = Date.now()) {
 			)
 		}
 	}
+	if (fixture.history) out.push(...historyStatements(fixture, now))
+	return out
+}
+
+const CHANNELS = ['tg', 'wa', 'dc', 'sl']
+// Channel conversations live in sessions whose host is `<channel>:<chat_id>`
+// (channelHost in src/lib/conversation.ts); MCP client sessions use other hosts.
+const isChannelHost = (column) =>
+	`substr(${column}, 1, 3) IN (${CHANNELS.map((c) => sql(`${c}:`)).join(', ')})`
+
+/**
+ * Conversation history for the scenario's inbound chat, written to the same
+ * tables logChannelMessage writes: one open `sessions` row for the chat host
+ * (mode 'chat', started at the first turn) and one `messages` row per turn,
+ * whose insert trigger feeds the messages_fts index session_search reads.
+ * Turn timestamps are seed time minus `minutes_ago`. Every channel conversation
+ * is cleared first. `sender` is accepted for the inbound triple but not stored:
+ * the store has no sender column, and DM turns are logged verbatim.
+ */
+function historyStatements(fixture, now) {
+	const { channel, chat_id: chatId, sender, history } = fixture
+	if (!CHANNELS.includes(channel)) {
+		throw new Error(`history needs channel to be one of ${CHANNELS.join(', ')}, got ${channel}`)
+	}
+	if (typeof chatId !== 'string' || !chatId) throw new Error('history needs a chat_id string')
+	if (sender !== undefined && typeof sender !== 'string') throw new Error('sender must be a string')
+	let previous = Number.POSITIVE_INFINITY
+	const turns = history.map((turn, i) => {
+		if (turn.role !== 'user' && turn.role !== 'assistant') {
+			throw new Error(`history[${i}].role must be user or assistant`)
+		}
+		if (typeof turn.text !== 'string') throw new Error(`history[${i}].text must be a string`)
+		if (typeof turn.minutes_ago !== 'number' || turn.minutes_ago < 0) {
+			throw new Error(`history[${i}].minutes_ago must be a number >= 0`)
+		}
+		// Production message ids grow with time; keep the fixture chronological.
+		if (turn.minutes_ago > previous) throw new Error(`history[${i}] is older than the turn before`)
+		previous = turn.minutes_ago
+		return { ...turn, created_at: now - Math.round(turn.minutes_ago * 60_000) }
+	})
+
+	const sessions = `SELECT id FROM sessions WHERE ${isChannelHost('host')}`
+	const out = [
+		`DELETE FROM messages WHERE session_id IN (${sessions})`,
+		`DELETE FROM sessions WHERE ${isChannelHost('host')}`,
+	]
+	if (turns.length === 0) return out
+	const sessionId = crypto.randomUUID()
+	out.push(
+		`INSERT INTO sessions (id, host, mode, started_at) VALUES (${sql(sessionId)}, ${sql(`${channel}:${chatId}`)}, 'chat', ${turns[0].created_at})`,
+	)
+	for (const turn of turns) {
+		out.push(
+			`INSERT INTO messages (session_id, role, body, created_at) VALUES (${sql(sessionId)}, ${sql(turn.role)}, ${sql(turn.text)}, ${turn.created_at})`,
+		)
+	}
 	return out
 }
 
@@ -56,6 +112,7 @@ export const DUMP_QUERIES = {
 		'SELECT id, kind, body, pinned, created_at, decayed_at FROM memory ORDER BY created_at, id',
 	allowlist: 'SELECT channel, sender_id, note FROM allowlist ORDER BY channel, sender_id',
 	tasks: 'SELECT * FROM tasks ORDER BY created_at, id',
+	history: `SELECT s.host, m.role, m.body, m.created_at FROM messages m JOIN sessions s ON m.session_id = s.id WHERE ${isChannelHost('s.host')} ORDER BY m.created_at, m.id`,
 	outbox: 'SELECT * FROM outbox ORDER BY created_at, id',
 	schedules: 'SELECT * FROM schedules ORDER BY created_at, id',
 	skills:
@@ -69,6 +126,16 @@ export function shapeDump(rowSets) {
 	const dump = Object.fromEntries(names.map((name, i) => [name, rowSets[i] ?? []]))
 	dump.profile = Object.fromEntries(dump.profile.map((r) => [r.name, r.body]))
 	dump.memories = dump.memories.map((m) => ({ ...m, pinned: m.pinned === 1 }))
+	dump.history = dump.history.map(({ host, role, body, created_at }) => {
+		const split = host.indexOf(':')
+		return {
+			channel: host.slice(0, split),
+			chat_id: host.slice(split + 1),
+			role,
+			text: body,
+			created_at,
+		}
+	})
 	return dump
 }
 
