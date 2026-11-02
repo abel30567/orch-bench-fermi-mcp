@@ -167,13 +167,24 @@ node scripts/eval-dump.mjs --persist-to $STATE > dump.json
 `eval-seed` applies the D1 migrations, then replaces the profile, memories, allowlist
 and tasks with the fixture's. It writes each fixture skill (`{ slug, body, metadata? }`)
 by calling the real `skill_set` tool on the running worker's `/mcp` (auth is off there).
+A fixture can also seed the conversation the task arrives in: `channel` and `chat_id`
+(the task's inbound chat), an optional `sender`, and
+`history: [{ "role": "user" | "assistant", "text", "minutes_ago" }]`, oldest first.
+The turns are written to the same `sessions`/`messages` tables `logChannelMessage` uses
+(one open session on `<channel>:<chat_id>`, FTS-indexed by the triggers), with
+`created_at` set `minutes_ago` before seed time, so `context_bootstrap`,
+`conversation_history` and `session_search` return them as in production. With `sender`,
+user turns get the group attribution prefix `[sender] `. Re-seeding replaces every
+channel conversation; MCP client sessions are kept. See
+`test/fixtures/eval/phone-redial.json`.
 Channel bindings, such as the Slack finance channel mapping to `household-finance`, are
 daemon prompt rules rather than worker state, so a fixture only seeds the skill and the
 allowlist.
 
-`eval-dump` prints profile, memories, allowlist, tasks, outbox, schedules, skill metadata
-and audit as JSON. It reads D1 only. Phone calls are kept in each `PhoneCallDO`, not in
-D1, so evals assert on them from the fake Twilio log (via `TWILIO_API_BASE`) and the
+`eval-dump` prints profile, memories, allowlist, tasks, outbox, schedules, skill metadata,
+audit and channel conversation history (`{ channel, chat_id, role, text, created_at }`,
+oldest first, including turns logged during the eval) as JSON. It reads D1 only. Phone
+calls are kept in each `PhoneCallDO`, not in D1, so evals assert on them from the fake Twilio log (via `TWILIO_API_BASE`) and the
 harness trace.
 
 ## Configuration
