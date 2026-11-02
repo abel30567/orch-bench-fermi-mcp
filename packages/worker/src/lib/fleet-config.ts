@@ -1,3 +1,11 @@
+import {
+	MAX_RUNNER_FILES,
+	RUNNER_ENTRY,
+	isSafeRunnerPath,
+	isValidSha256,
+	runnerUrl,
+} from './runner-pin.ts'
+
 export interface FleetConfig {
 	region: string
 	monthly_budget_usd: number
@@ -11,6 +19,8 @@ export interface FleetConfig {
 	/** Supply-chain pin for the box-runner boot download (#34); launch refuses when unset. */
 	runner_ref: string | null
 	runner_sha256: string | null
+	/** Multi-file manifest `{ path: sha256 }` (must include box-runner.mjs); null for a legacy single-file pin. */
+	runner_files: Record<string, string> | null
 	default_ttl_seconds: number
 	max_ttl_seconds: number
 	heartbeat_stale_ms: number
@@ -28,6 +38,7 @@ const DEFAULTS: FleetConfig = {
 	mcp_base_url: null,
 	runner_ref: null,
 	runner_sha256: null,
+	runner_files: null,
 	default_ttl_seconds: 3600,
 	max_ttl_seconds: 4 * 3600,
 	heartbeat_stale_ms: 10 * 60_000,
@@ -148,6 +159,95 @@ export async function updateFleetConfig(
 	} catch {}
 	await env.FERMI_KV.put('fleet:config', JSON.stringify({ ...stored, ...verdict.patch }))
 	return { ok: true, config: verdict.config }
+}
+
+/**
+ * POST /admin/fleet/pin-runner. Fetches every file at `ref`, hashes it, and
+ * stores the pin. `files` is optional:
+ *   - omitted: legacy single-file pin of box-runner.mjs;
+ *   - `string[]` of paths: each is fetched and its sha256 recorded;
+ *   - `{ path: sha256 }` manifest: each is fetched and must match its hash.
+ * Every manifest must include box-runner.mjs.
+ */
+export async function pinRunner(
+	env: Env,
+	body: unknown,
+): Promise<{ status: number; body: Record<string, unknown> }> {
+	const bad = (error: string) => ({ status: 400, body: { ok: false, error } })
+	const b = (body && typeof body === 'object' ? body : {}) as { ref?: unknown; files?: unknown }
+	if (typeof b.ref !== 'string' || !/^[0-9a-f]{7,40}$/.test(b.ref))
+		return bad('ref must be a commit sha')
+	const ref = b.ref
+
+	let expected: Record<string, string | null>
+	if (b.files === undefined) {
+		expected = { [RUNNER_ENTRY]: null }
+	} else if (Array.isArray(b.files)) {
+		expected = {}
+		for (const p of b.files) {
+			if (!isSafeRunnerPath(p)) return bad(`files: unsafe path ${JSON.stringify(p)}`)
+			if (p in expected) return bad(`files: duplicate path ${p}`)
+			expected[p] = null
+		}
+	} else if (b.files && typeof b.files === 'object') {
+		expected = {}
+		for (const [p, sha] of Object.entries(b.files as Record<string, unknown>)) {
+			if (!isSafeRunnerPath(p)) return bad(`files: unsafe path ${JSON.stringify(p)}`)
+			if (!isValidSha256(sha)) return bad(`files: ${p} sha256 must be 64 hex chars`)
+			expected[p] = sha.toLowerCase()
+		}
+	} else {
+		return bad('files must be an array of paths or a { path: sha256 } object')
+	}
+	const paths = Object.keys(expected)
+	if (paths.length > MAX_RUNNER_FILES) return bad(`files: at most ${MAX_RUNNER_FILES} entries`)
+	if (!(RUNNER_ENTRY in expected)) return bad(`files must include ${RUNNER_ENTRY}`)
+
+	const files: Record<string, string> = {}
+	let bytes = 0
+	for (const path of paths) {
+		const res = await fetch(runnerUrl(ref, path))
+		if (!res.ok) return { status: 502, body: { ok: false, error: `fetch_${res.status}`, path } }
+		const buf = await res.arrayBuffer()
+		bytes += buf.byteLength
+		const digest = await crypto.subtle.digest('SHA-256', buf)
+		const sha256 = [...new Uint8Array(digest)].map((x) => x.toString(16).padStart(2, '0')).join('')
+		const want = expected[path]
+		if (want && want !== sha256) {
+			return {
+				status: 409,
+				body: { ok: false, error: 'sha256_mismatch', path, expected: want, actual: sha256 },
+			}
+		}
+		files[path] = sha256
+	}
+
+	const raw = await env.FERMI_KV.get('fleet:config')
+	let stored: Record<string, unknown> = {}
+	try {
+		stored = raw ? JSON.parse(raw) : {}
+	} catch {}
+	const legacy = b.files === undefined
+	await env.FERMI_KV.put(
+		'fleet:config',
+		JSON.stringify({
+			...stored,
+			runner_ref: ref,
+			runner_sha256: files[RUNNER_ENTRY],
+			// A legacy pin clears any earlier manifest so it can't shadow the new ref.
+			runner_files: legacy ? null : files,
+		}),
+	)
+	return {
+		status: 200,
+		body: {
+			ok: true,
+			ref,
+			sha256: files[RUNNER_ENTRY],
+			...(legacy ? {} : { files }),
+			bytes,
+		},
+	}
 }
 
 export function hourlyRate(instanceType: string): number {
