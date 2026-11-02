@@ -1,8 +1,11 @@
 #!/usr/bin/env node
 // Seed a local eval worker (wrangler.eval.jsonc) from a fixture JSON: profile,
-// memories, allowlist, pending tasks and skills. Applies D1 migrations, replaces
-// those tables with the fixture's rows via `wrangler d1 execute --local`, then
-// writes each skill through the running worker's `skill_set` tool on /mcp.
+// memories, allowlist, pending tasks, conversation history and skills. Applies
+// D1 migrations, replaces those tables with the fixture's rows via
+// `wrangler d1 execute --local`, writes the history through the real
+// conversation store (logChannelMessage) on the same local D1 via wrangler's
+// getPlatformProxy, then writes each skill through the running worker's
+// `skill_set` tool on /mcp. Needs Node >= 22.18 (imports the worker's .ts).
 //
 //   node scripts/eval-seed.mjs test/fixtures/eval/sample.json [--persist-to DIR] \
 //     [--url http://127.0.0.1:8787]
@@ -13,9 +16,11 @@
 import { execFileSync } from 'node:child_process'
 import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
-import { seedSkills, seedStatements } from './eval-db.mjs'
+import { dirname, join, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
+import { seedHistory, seedSkills, seedStatements } from './eval-db.mjs'
 
+const workerDir = fileURLToPath(new URL('..', import.meta.url))
 const args = process.argv.slice(2)
 const persistAt = args.indexOf('--persist-to')
 const persist = persistAt >= 0 ? ['--persist-to', args.splice(persistAt, 2)[1]] : []
@@ -44,10 +49,41 @@ const wrangler = (...rest) =>
 			'wrangler.eval.jsonc',
 			...persist,
 		],
-		{ cwd: new URL('..', import.meta.url), stdio: ['ignore', 'inherit', 'inherit'] },
+		{ cwd: workerDir, stdio: ['ignore', 'inherit', 'inherit'] },
 	)
 wrangler('migrations', 'apply')
 wrangler('execute', '--file', file)
+if (fixture.history) {
+	// A D1-only config for the same database, so the proxy starts none of the
+	// worker's Durable Objects; persisted where `wrangler dev --persist-to` keeps it.
+	const { experimental_readRawConfig, getPlatformProxy } = await import('wrangler')
+	const { rawConfig } = experimental_readRawConfig({
+		config: join(workerDir, 'wrangler.eval.jsonc'),
+	})
+	const configPath = join(dirname(file), 'wrangler.json')
+	writeFileSync(
+		configPath,
+		JSON.stringify({
+			name: 'fermi-eval-seed',
+			compatibility_date: rawConfig.compatibility_date,
+			d1_databases: rawConfig.d1_databases,
+		}),
+	)
+	const proxy = await getPlatformProxy({
+		configPath,
+		persist: { path: join(resolve(workerDir, persist[1] ?? '.wrangler/state'), 'v3') },
+		envFiles: [],
+		remoteBindings: false,
+	})
+	try {
+		await seedHistory(proxy.env.FERMI_DB, fixture)
+	} finally {
+		await proxy.dispose()
+	}
+	console.log(
+		`seeded ${fixture.history.length} history turn(s) for ${fixture.channel}:${fixture.chat_id}`,
+	)
+}
 if (fixture.skills) {
 	await seedSkills(fixture.skills, new URL('/mcp', url).href)
 	console.log(`seeded ${fixture.skills.length} skill(s) via skill_set`)

@@ -1,8 +1,10 @@
 #!/usr/bin/env node
 // Dump a local eval worker's D1 state as JSON (stdout): profile, memories,
-// allowlist, tasks, outbox, schedules, skill metadata and audit, via
+// allowlist, tasks, outbox, schedules, skill metadata, audit and channel
+// conversation history (seeded and logged during the run), via
 // `wrangler d1 execute --local`. D1 only: phone calls live in each PhoneCallDO,
-// so evals assert on them from the fake Twilio log instead.
+// so evals assert on them from the fake Twilio log instead. Needs Node >= 22.18
+// (eval-db.mjs imports the worker's .ts conversation store).
 //
 //   node scripts/eval-dump.mjs [--persist-to DIR] > dump.json
 

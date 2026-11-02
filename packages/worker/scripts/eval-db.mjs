@@ -1,5 +1,11 @@
-// SQL and MCP calls shared by eval-seed.mjs and eval-dump.mjs. No Node imports,
-// so the tests can run the same statements and calls against the test worker.
+// SQL, conversation-store writes and MCP calls shared by eval-seed.mjs and
+// eval-dump.mjs. No Node imports, so the tests can run the same statements and
+// calls against the test worker.
+
+import { channelHost, logChannelMessage } from '../src/lib/conversation.ts'
+
+/** Channels the conversation tools (context_bootstrap, conversation_history) accept. */
+const CHAT_CHANNELS = ['tg', 'wa', 'dc', 'sl']
 
 const sql = (value) => {
 	if (value === null || value === undefined) return 'NULL'
@@ -61,6 +67,10 @@ export const DUMP_QUERIES = {
 	skills:
 		'SELECT slug, name, description, keywords, allowed_tools, version, source, decayed_at FROM skills ORDER BY slug',
 	audit: 'SELECT * FROM audit ORDER BY id',
+	history: `SELECT s.host, m.role, m.body, m.created_at
+		FROM messages m JOIN sessions s ON m.session_id = s.id
+		WHERE substr(s.host, 1, 3) IN (${CHAT_CHANNELS.map((c) => `'${c}:'`).join(', ')})
+		ORDER BY m.created_at, m.id`,
 }
 
 /** Shape rows (one array per DUMP_QUERIES entry, same order) like a fixture. */
@@ -69,7 +79,57 @@ export function shapeDump(rowSets) {
 	const dump = Object.fromEntries(names.map((name, i) => [name, rowSets[i] ?? []]))
 	dump.profile = Object.fromEntries(dump.profile.map((r) => [r.name, r.body]))
 	dump.memories = dump.memories.map((m) => ({ ...m, pinned: m.pinned === 1 }))
+	dump.history = dump.history.map(({ host, role, body, created_at }) => ({
+		channel: host.slice(0, 2),
+		chat_id: host.slice(3),
+		role,
+		text: body,
+		created_at,
+	}))
 	return dump
+}
+
+/**
+ * Replace one chat's history with the fixture's `history` turns
+ * ({ role, text, minutes_ago }, oldest first) for `fixture.channel` /
+ * `fixture.chat_id`. Each turn is written by the real `logChannelMessage`,
+ * timestamped `now - minutes_ago`. With `fixture.sender`, user turns carry the
+ * group-chat attribution `[sender] ` the channel webhooks add; omit it for a DM.
+ * `db` is a D1Database: the eval worker's local D1 via wrangler's
+ * getPlatformProxy in eval-seed.mjs, the test D1 in the tests.
+ */
+export async function seedHistory(db, fixture, now = Date.now()) {
+	const { channel, chat_id: chatId, sender, history } = fixture
+	if (!CHAT_CHANNELS.includes(channel)) {
+		throw new Error(`history needs channel to be one of ${CHAT_CHANNELS.join(', ')}`)
+	}
+	if (typeof chatId !== 'string' || !chatId) throw new Error('history needs a chat_id')
+	let previous = Number.POSITIVE_INFINITY
+	for (const [i, turn] of history.entries()) {
+		if (turn.role !== 'user' && turn.role !== 'assistant') {
+			throw new Error(`history[${i}].role must be user or assistant`)
+		}
+		if (typeof turn.text !== 'string' || !turn.text) {
+			throw new Error(`history[${i}].text is required`)
+		}
+		if (!(turn.minutes_ago >= 0) || turn.minutes_ago > previous) {
+			throw new Error(`history[${i}].minutes_ago must be >= 0 and not above the previous turn's`)
+		}
+		previous = turn.minutes_ago
+	}
+
+	const host = channelHost(channel, chatId)
+	await db.batch([
+		db
+			.prepare('DELETE FROM messages WHERE session_id IN (SELECT id FROM sessions WHERE host = ?1)')
+			.bind(host),
+		db.prepare('DELETE FROM sessions WHERE host = ?1').bind(host),
+	])
+	for (const turn of history) {
+		const body = turn.role === 'user' && sender ? `[${sender}] ${turn.text}` : turn.text
+		const at = Math.round(now - turn.minutes_ago * 60_000)
+		await logChannelMessage(db, channel, chatId, turn.role, body, at)
+	}
 }
 
 /** First JSON-RPC message of a streamable-HTTP MCP response (JSON or SSE body). */
