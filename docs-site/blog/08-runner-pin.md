@@ -22,6 +22,8 @@ Three properties, all fail-closed:
 2. **Hash mismatch aborts.** If the fetched file doesn't match the pin — tampered, truncated, wrong ref — the box runs *nothing* and reports the failure. A wrong runner is a non-event, not a compromise.
 3. **The tamper case is a test.** `test/shell/boot-pin-harness.sh` serves a tampered file and asserts the boot fails closed with nothing installed. The guarantee is executable, not aspirational.
 
+The pin has since grown into a manifest, `{ref, files: {path: sha256}}` (`runner_files` in `fleet:config`), so box-runner can import shared daemon modules (`harness/`, `lib/`). Every file is fetched into a staging dir, *every* hash is checked, and only then is anything installed in the same relative layout — one tampered or missing file and nothing lands. `POST /admin/fleet/pin-runner` takes `{ref, files}` where `files` is a list of paths (the server hashes each at `ref`; `box-runner.mjs` is always included) or a `{path: sha256}` map (the served hashes must match). A bare `{ref}` still writes a legacy single-file pin, which keeps booting. The harness tampers with and omits each manifest file in turn.
+
 The retry from [the 100-agent run](/blog/05-hundred-agents) lives here too: `curl --retry 4 --retry-delay 3 --retry-all-errors`, so a CDN hiccup is a slow boot, not a dead box — availability and integrity in the same few lines.
 
 ## The lesson
