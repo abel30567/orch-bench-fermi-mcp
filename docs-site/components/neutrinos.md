@@ -64,11 +64,13 @@ Legacy free-text contracts are grandfathered; new launches should always pass st
 | AWS access key pair | `RunInstances`/`TerminateInstances`/`DescribeInstances` | IAM policy limited to those actions, one region, your fleet security group |
 | `CLAUDE_CODE_OAUTH_TOKEN` in Fermi secrets | boxes inference on your existing Claude subscription — **inference is not billed to the budget**, EC2 wall-clock is | it's your sub; rotate from your Anthropic account |
 | `GITHUB_TOKEN` in Fermi secrets | clone/push/PR | fine-grained token, only the repos agents work |
-| `fleet:config` in KV | region, instance type, `allowed_instance_types`, `max_concurrent`, `monthly_budget_usd`, `runner_ref`+`runner_sha256`, TTLs | `GET`/`POST /admin/fleet/config` (bearer) for the operator fields; `pin-runner` for the pin |
+| `fleet:config` in KV | region, instance type, `allowed_instance_types`, `max_concurrent`, `monthly_budget_usd`, `runner_ref`+`runner_sha256` (+ optional `runner_files` manifest), TTLs | `GET`/`POST /admin/fleet/config` (bearer) for the operator fields; `pin-runner` for the pin |
 
 Cost intuition: a `t3.small` is $0.0208/hr. The 100-agent run (~6 minutes median per box) cost about **$1.60 of EC2** and zero marginal inference.
 
 Sizing: `t3.small` (2 GiB) is fine for Python-only verifiers and small fixes. Node/TypeScript builders — `tsc` on large repos, type-aware ESLint, jest/vitest, `cdk synth` — OOM-kill the harness there; launch those with `instance_type: "t3.medium"` (4 GiB). The type must be in `allowed_instance_types`, is stored on the agent, and prices its accrual.
+
+The runner pin is a manifest `{ref, files: {path: sha256}}` that must include `box-runner.mjs`, so box-runner can ship with the daemon's shared `harness/` and `lib/` modules. `POST /admin/fleet/pin-runner` takes `{ref}` (legacy: hashes `box-runner.mjs` alone) or `{ref, files}` (fetches every file at `ref` and refuses with 409 if any hash differs). Boot fetches each file into the same relative layout under `/opt/fermi` and verifies every hash before installing anything; one missing or mismatched file refuses the boot.
 
 ## Operating it
 
