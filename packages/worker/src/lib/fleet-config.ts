@@ -1,3 +1,11 @@
+import {
+	MAX_RUNNER_FILES,
+	RUNNER_ENTRY,
+	isSafeRunnerPath,
+	isValidRunnerFiles,
+	runnerUrl,
+} from './runner-pin.ts'
+
 export interface FleetConfig {
 	region: string
 	monthly_budget_usd: number
@@ -11,6 +19,8 @@ export interface FleetConfig {
 	/** Supply-chain pin for the box-runner boot download (#34); launch refuses when unset. */
 	runner_ref: string | null
 	runner_sha256: string | null
+	/** Multi-file manifest `{ path: sha256 }`; null = legacy single-file pin via runner_sha256. */
+	runner_files: Record<string, string> | null
 	default_ttl_seconds: number
 	max_ttl_seconds: number
 	heartbeat_stale_ms: number
@@ -28,6 +38,7 @@ const DEFAULTS: FleetConfig = {
 	mcp_base_url: null,
 	runner_ref: null,
 	runner_sha256: null,
+	runner_files: null,
 	default_ttl_seconds: 3600,
 	max_ttl_seconds: 4 * 3600,
 	heartbeat_stale_ms: 10 * 60_000,
@@ -148,6 +159,76 @@ export async function updateFleetConfig(
 	} catch {}
 	await env.FERMI_KV.put('fleet:config', JSON.stringify({ ...stored, ...verdict.patch }))
 	return { ok: true, config: verdict.config }
+}
+
+/**
+ * POST /admin/fleet/pin-runner: fetch every runner file at `ref`, hash it, and
+ * store the manifest. `files` is optional (legacy: box-runner.mjs only) and may
+ * be an array of paths, or a `{ path: sha256 }` manifest whose hashes must match
+ * what is served. box-runner.mjs is always pinned.
+ */
+export async function pinRunner(
+	env: Env,
+	body: { ref?: unknown; files?: unknown },
+): Promise<{ status: number; body: Record<string, unknown> }> {
+	const bad = (error: string) => ({ status: 400, body: { ok: false, error } })
+	const ref = body.ref
+	if (typeof ref !== 'string' || !/^[0-9a-f]{7,40}$/.test(ref))
+		return bad('ref must be a commit sha')
+
+	let expected: Record<string, string> | null = null
+	let paths: string[]
+	if (body.files === undefined || body.files === null) {
+		paths = [RUNNER_ENTRY]
+	} else if (Array.isArray(body.files)) {
+		paths = [...new Set([RUNNER_ENTRY, ...body.files])]
+		if (paths.length > MAX_RUNNER_FILES || !paths.every(isSafeRunnerPath))
+			return bad(`files must be at most ${MAX_RUNNER_FILES} safe relative paths`)
+	} else if (isValidRunnerFiles(body.files)) {
+		expected = body.files
+		paths = Object.keys(body.files)
+	} else {
+		return bad(
+			`files must be a path array or a { path: sha256 } manifest containing ${RUNNER_ENTRY}`,
+		)
+	}
+
+	const files: Record<string, string> = {}
+	let bytes = 0
+	for (const path of paths.sort()) {
+		const res = await fetch(runnerUrl(ref, path))
+		if (!res.ok) return { status: 502, body: { ok: false, error: `fetch_${res.status}`, path } }
+		const buf = await res.arrayBuffer()
+		const digest = await crypto.subtle.digest('SHA-256', buf)
+		const sha256 = [...new Uint8Array(digest)].map((x) => x.toString(16).padStart(2, '0')).join('')
+		if (expected && expected[path] !== sha256) {
+			return {
+				status: 409,
+				body: {
+					ok: false,
+					error: 'sha256_mismatch',
+					path,
+					expected: expected[path],
+					actual: sha256,
+				},
+			}
+		}
+		files[path] = sha256
+		bytes += buf.byteLength
+	}
+
+	const raw = await env.FERMI_KV.get('fleet:config')
+	let stored: Record<string, unknown> = {}
+	try {
+		stored = raw ? JSON.parse(raw) : {}
+	} catch {}
+	// runner_sha256 mirrors the entry hash so older readers keep a valid pin.
+	const sha256 = files[RUNNER_ENTRY]
+	await env.FERMI_KV.put(
+		'fleet:config',
+		JSON.stringify({ ...stored, runner_ref: ref, runner_sha256: sha256, runner_files: files }),
+	)
+	return { status: 200, body: { ok: true, ref, sha256, files, bytes } }
 }
 
 export function hourlyRate(instanceType: string): number {
