@@ -1,3 +1,11 @@
+import {
+	RUNNER_ENTRY,
+	RUNNER_MAX_FILES,
+	isSafeRunnerPath,
+	runnerManifestError,
+	runnerUrl,
+} from './runner-pin.ts'
+
 export interface FleetConfig {
 	region: string
 	monthly_budget_usd: number
@@ -11,6 +19,8 @@ export interface FleetConfig {
 	/** Supply-chain pin for the box-runner boot download (#34); launch refuses when unset. */
 	runner_ref: string | null
 	runner_sha256: string | null
+	/** Multi-file pin: daemon-relative path → sha256 (includes box-runner.mjs). Null for a legacy pin. */
+	runner_files: Record<string, string> | null
 	default_ttl_seconds: number
 	max_ttl_seconds: number
 	heartbeat_stale_ms: number
@@ -28,6 +38,7 @@ const DEFAULTS: FleetConfig = {
 	mcp_base_url: null,
 	runner_ref: null,
 	runner_sha256: null,
+	runner_files: null,
 	default_ttl_seconds: 3600,
 	max_ttl_seconds: 4 * 3600,
 	heartbeat_stale_ms: 10 * 60_000,
@@ -148,6 +159,89 @@ export async function updateFleetConfig(
 	} catch {}
 	await env.FERMI_KV.put('fleet:config', JSON.stringify({ ...stored, ...verdict.patch }))
 	return { ok: true, config: verdict.config }
+}
+
+/**
+ * POST /admin/fleet/pin-runner (#34): fetch every file at `ref`, hash it and
+ * store the manifest in fleet:config. `files` is optional: omitted pins only
+ * box-runner.mjs (legacy single-file pin); a path array is fetched and hashed
+ * (box-runner.mjs is always included); a `{ path: sha256 }` manifest is
+ * fetched and must match, so the operator's expected hashes are confirmed.
+ */
+export async function pinRunner(
+	env: Env,
+	body: { ref?: unknown; files?: unknown },
+): Promise<{ status: number; body: Record<string, unknown> }> {
+	const bad = (error: string) => ({ status: 400, body: { ok: false, error } })
+	const ref = body.ref
+	if (typeof ref !== 'string' || !/^[0-9a-f]{7,40}$/.test(ref))
+		return bad('ref must be a commit sha')
+
+	let paths: string[]
+	let expected: Record<string, string> | null = null
+	if (body.files === undefined) {
+		paths = [RUNNER_ENTRY]
+	} else if (Array.isArray(body.files)) {
+		const list = body.files as unknown[]
+		if (!list.every((p): p is string => typeof p === 'string' && isSafeRunnerPath(p)))
+			return bad('files must be safe relative paths')
+		if (new Set(list).size !== list.length) return bad('files must not repeat a path')
+		paths = list.includes(RUNNER_ENTRY) ? list : [RUNNER_ENTRY, ...list]
+		if (paths.length > RUNNER_MAX_FILES)
+			return bad(`files must list at most ${RUNNER_MAX_FILES} entries`)
+	} else {
+		const error = runnerManifestError(body.files)
+		if (error) return bad(error)
+		expected = body.files as Record<string, string>
+		paths = Object.keys(expected)
+	}
+
+	const fetched = await Promise.all(
+		paths.map(async (path) => {
+			const res = await fetch(runnerUrl(ref, path))
+			if (!res.ok) return { path, status: res.status }
+			const bytes = await res.arrayBuffer()
+			const digest = await crypto.subtle.digest('SHA-256', bytes)
+			const sha256 = [...new Uint8Array(digest)]
+				.map((x) => x.toString(16).padStart(2, '0'))
+				.join('')
+			return { path, sha256, bytes: bytes.byteLength }
+		}),
+	)
+	const files: Record<string, string> = {}
+	let total = 0
+	for (const f of fetched) {
+		if (f.sha256 === undefined)
+			return { status: 502, body: { ok: false, error: `fetch_${f.status}`, path: f.path } }
+		if (expected && expected[f.path] !== f.sha256)
+			return {
+				status: 409,
+				body: { ok: false, error: 'sha256_mismatch', path: f.path, sha256: f.sha256 },
+			}
+		files[f.path] = f.sha256
+		total += f.bytes
+	}
+
+	const raw = await env.FERMI_KV.get('fleet:config')
+	let stored: Record<string, unknown> = {}
+	try {
+		stored = raw ? JSON.parse(raw) : {}
+	} catch {}
+	const legacy = body.files === undefined
+	await env.FERMI_KV.put(
+		'fleet:config',
+		JSON.stringify({
+			...stored,
+			runner_ref: ref,
+			runner_sha256: files[RUNNER_ENTRY],
+			// A legacy pin clears any manifest left over from an earlier ref.
+			runner_files: legacy ? null : files,
+		}),
+	)
+	return {
+		status: 200,
+		body: { ok: true, ref, sha256: files[RUNNER_ENTRY], files, bytes: total },
+	}
 }
 
 export function hourlyRate(instanceType: string): number {

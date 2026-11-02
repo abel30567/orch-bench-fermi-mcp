@@ -64,7 +64,7 @@ Legacy free-text contracts are grandfathered; new launches should always pass st
 | AWS access key pair | `RunInstances`/`TerminateInstances`/`DescribeInstances` | IAM policy limited to those actions, one region, your fleet security group |
 | `CLAUDE_CODE_OAUTH_TOKEN` in Fermi secrets | boxes inference on your existing Claude subscription — **inference is not billed to the budget**, EC2 wall-clock is | it's your sub; rotate from your Anthropic account |
 | `GITHUB_TOKEN` in Fermi secrets | clone/push/PR | fine-grained token, only the repos agents work |
-| `fleet:config` in KV | region, instance type, `allowed_instance_types`, `max_concurrent`, `monthly_budget_usd`, `runner_ref`+`runner_sha256`, TTLs | `GET`/`POST /admin/fleet/config` (bearer) for the operator fields; `pin-runner` for the pin |
+| `fleet:config` in KV | region, instance type, `allowed_instance_types`, `max_concurrent`, `monthly_budget_usd`, `runner_ref`+`runner_sha256` (+ `runner_files` manifest), TTLs | `GET`/`POST /admin/fleet/config` (bearer) for the operator fields; `pin-runner` for the pin |
 
 Cost intuition: a `t3.small` is $0.0208/hr. The 100-agent run (~6 minutes median per box) cost about **$1.60 of EC2** and zero marginal inference.
 
@@ -79,6 +79,8 @@ cloud_agent_list / get     # status, exit_reason, accrued cost, inference teleme
 cloud_agent_followup       # send a follow-up prompt to a live box (agent_stalled if its runner died)
 cloud_agent_stop / destroy # manual kill switch
 ```
+
+`POST /admin/fleet/pin-runner` takes `{ "ref": "<commit sha>" }` (pins `box-runner.mjs` only) or a manifest via `files`: either a path list (`["harness/claude.mjs", "lib/util.mjs"]`, fetched and hashed; `box-runner.mjs` is always added) or `{ "path": "sha256" }` (fetched and must match, else `409`). Paths are relative to the daemon repo; boxes fetch every file into the same layout under `/opt/fermi/` and verify every hash before installing any of them. A bad ref or malformed `files` is `400`.
 
 Liveness is on the agent record, not in the event log: `last_heartbeat_at` (runner check-in), `last_working_event_at` (last harness progress note), `restart_count`, `instance_type`. The reaper fails an agent `runner_stalled` and terminates its box when heartbeats go stale, and the box gateway fails it `runner_restarted` when a pre-resume runner announces a fresh boot over held work — in both cases the work task fails too, so `task_wait` returns instead of hanging until TTL.
 
