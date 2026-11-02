@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 // Seed a local eval worker (wrangler.eval.jsonc) from a fixture JSON: profile,
-// memories, allowlist, pending tasks and skills. Applies D1 migrations, replaces
-// those tables with the fixture's rows via `wrangler d1 execute --local`, then
-// writes each skill through the running worker's `skill_set` tool on /mcp.
+// memories, allowlist, pending tasks, conversation history and skills. Applies D1
+// migrations, replaces those tables (for history: the fixture chat's sessions and
+// messages) with the fixture's rows via `wrangler d1 execute --local`, then writes
+// each skill through the running worker's `skill_set` tool on /mcp.
 //
 //   node scripts/eval-seed.mjs test/fixtures/eval/sample.json [--persist-to DIR] \
 //     [--url http://127.0.0.1:8787]
@@ -48,6 +49,11 @@ const wrangler = (...rest) =>
 	)
 wrangler('migrations', 'apply')
 wrangler('execute', '--file', file)
+if (fixture.history) {
+	console.log(
+		`seeded ${fixture.history.length} history turn(s) for ${fixture.channel}:${fixture.chat_id}`,
+	)
+}
 if (fixture.skills) {
 	await seedSkills(fixture.skills, new URL('/mcp', url).href)
 	console.log(`seeded ${fixture.skills.length} skill(s) via skill_set`)
