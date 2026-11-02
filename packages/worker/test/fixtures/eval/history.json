@@ -1,0 +1,25 @@
+{
+	"channel": "tg",
+	"chat_id": "1000001",
+	"sender": "1000001",
+	"allowlist": [{ "channel": "tg", "sender_id": "1000001", "note": "owner" }],
+	"history": [
+		{
+			"role": "user",
+			"text": "Call the dentist at +15555550100 and book a cleaning for next week.",
+			"minutes_ago": 25
+		},
+		{
+			"role": "assistant",
+			"text": "Before I dial +15555550100 for the cleaning, can you confirm?",
+			"minutes_ago": 24
+		},
+		{ "role": "user", "text": "Yes, go ahead and call.", "minutes_ago": 23 },
+		{
+			"role": "assistant",
+			"text": "The line was busy, nobody picked up. I can redial in a few minutes.",
+			"minutes_ago": 20
+		},
+		{ "role": "user", "text": "Thanks, try the dentist again later.", "minutes_ago": 18 }
+	]
+}
