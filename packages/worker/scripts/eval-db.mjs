@@ -38,6 +38,7 @@ export function seedStatements(fixture, now = Date.now()) {
 			)
 		}
 	}
+	if (fixture.history) out.push(...historyStatements(fixture, now))
 	if (fixture.tasks) {
 		out.push('DELETE FROM tasks')
 		for (const [i, t] of fixture.tasks.entries()) {
@@ -45,6 +46,59 @@ export function seedStatements(fixture, now = Date.now()) {
 				`INSERT INTO tasks (id, channel, sender, chat_id, payload, created_at, queue) VALUES (${sql(t.id)}, ${sql(t.channel)}, ${sql(t.sender)}, ${sql(t.chat_id)}, ${sql(t.payload)}, ${sql(t.created_at ?? now + i)}, ${sql(t.queue ?? 'main')})`,
 			)
 		}
+	}
+	return out
+}
+
+const CHANNELS = ['tg', 'wa', 'dc', 'sl']
+// Sessions written by the conversation store have host `<channel>:<chat_id>`
+// (channelHost in src/lib/conversation.ts); MCP host sessions are left alone.
+const CHANNEL_HOST = `substr(host, 1, 3) IN (${CHANNELS.map((c) => sql(`${c}:`)).join(', ')})`
+
+/**
+ * Conversation history, written as the conversation store writes it
+ * (logChannelMessage: getOrCreateChannelSession + logMessage): one open
+ * `chat` session for host `<channel>:<chat_id>` and one messages row per turn,
+ * so the FTS triggers index them and context_bootstrap, conversation_history
+ * and session_search read them back like production turns. Each turn is
+ * timestamped `minutes_ago` before `now`. With `sender`, user turns carry the
+ * group-chat attribution the channel webhooks log (`[sender] text`).
+ * Clears every channel conversation first; MCP host sessions are kept.
+ */
+function historyStatements({ history, channel, chat_id: chatId, sender }, now) {
+	if (!Array.isArray(history)) throw new Error('fixture.history must be an array')
+	if (!CHANNELS.includes(channel)) {
+		throw new Error(`fixture.history needs channel (one of ${CHANNELS.join(', ')}), got ${channel}`)
+	}
+	if (typeof chatId !== 'string' || !chatId) throw new Error('fixture.history needs chat_id')
+	if (sender !== undefined && (typeof sender !== 'string' || !sender)) {
+		throw new Error('fixture.sender must be a non-empty string')
+	}
+	const turns = history.map((turn, i) => {
+		if (turn.role !== 'user' && turn.role !== 'assistant') {
+			throw new Error(`history[${i}].role must be user or assistant`)
+		}
+		if (typeof turn.text !== 'string') throw new Error(`history[${i}].text must be a string`)
+		if (typeof turn.minutes_ago !== 'number' || !(turn.minutes_ago >= 0)) {
+			throw new Error(`history[${i}].minutes_ago must be a number >= 0`)
+		}
+		const body = sender && turn.role === 'user' ? `[${sender}] ${turn.text}` : turn.text
+		return { role: turn.role, body, at: Math.round(now - turn.minutes_ago * 60_000) }
+	})
+	const out = [
+		`DELETE FROM messages WHERE session_id IN (SELECT id FROM sessions WHERE ${CHANNEL_HOST})`,
+		`DELETE FROM sessions WHERE ${CHANNEL_HOST}`,
+	]
+	if (turns.length === 0) return out
+	const sessionId = crypto.randomUUID()
+	const startedAt = Math.min(...turns.map((t) => t.at))
+	out.push(
+		`INSERT INTO sessions (id, host, mode, started_at) VALUES (${sql(sessionId)}, ${sql(`${channel}:${chatId}`)}, 'chat', ${startedAt})`,
+	)
+	for (const t of turns) {
+		out.push(
+			`INSERT INTO messages (session_id, role, body, created_at) VALUES (${sql(sessionId)}, ${sql(t.role)}, ${sql(t.body)}, ${t.at})`,
+		)
 	}
 	return out
 }
@@ -61,6 +115,7 @@ export const DUMP_QUERIES = {
 	skills:
 		'SELECT slug, name, description, keywords, allowed_tools, version, source, decayed_at FROM skills ORDER BY slug',
 	audit: 'SELECT * FROM audit ORDER BY id',
+	history: `SELECT substr(host, 1, 2) AS channel, substr(host, 4) AS chat_id, session_id, role, body AS text, m.created_at FROM messages m JOIN sessions s ON m.session_id = s.id WHERE ${CHANNEL_HOST} ORDER BY m.created_at, m.id`,
 }
 
 /** Shape rows (one array per DUMP_QUERIES entry, same order) like a fixture. */

@@ -164,15 +164,26 @@ node scripts/eval-seed.mjs test/fixtures/eval/sample.json --persist-to $STATE \
 node scripts/eval-dump.mjs --persist-to $STATE > dump.json
 ```
 
-`eval-seed` applies the D1 migrations, then replaces the profile, memories, allowlist
-and tasks with the fixture's. It writes each fixture skill (`{ slug, body, metadata? }`)
+`eval-seed` applies the D1 migrations, then replaces the profile, memories, allowlist,
+conversation history and tasks with the fixture's. It writes each fixture skill (`{ slug, body, metadata? }`)
 by calling the real `skill_set` tool on the running worker's `/mcp` (auth is off there).
 Channel bindings, such as the Slack finance channel mapping to `household-finance`, are
 daemon prompt rules rather than worker state, so a fixture only seeds the skill and the
 allowlist.
 
-`eval-dump` prints profile, memories, allowlist, tasks, outbox, schedules, skill metadata
-and audit as JSON. It reads D1 only. Phone calls are kept in each `PhoneCallDO`, not in
+A fixture can seed conversation history for the scenario's inbound chat: top-level
+`channel` (`tg`, `wa`, `dc` or `sl`), `chat_id`, an optional `sender`, and
+`history: [{ "role": "user" | "assistant", "text": "...", "minutes_ago": 25 }]`. The turns
+are written to the `sessions`/`messages` tables exactly as `logChannelMessage` writes them
+(one open session for `<channel>:<chat_id>`, FTS-indexed), each timestamped `minutes_ago`
+before seed time, so `context_bootstrap`, `conversation_history` and `session_search`
+return them as production turns. With `sender`, user turns carry the group-chat
+attribution the webhooks log (`[sender] text`); omit it for a DM. Seeding history first
+clears every channel conversation. See `test/fixtures/eval/history-redial.json`.
+
+`eval-dump` prints profile, memories, allowlist, tasks, outbox, schedules, skill metadata,
+audit and channel conversation history (`history`: channel, chat_id, session_id, role,
+text, created_at; oldest first) as JSON. It reads D1 only. Phone calls are kept in each `PhoneCallDO`, not in
 D1, so evals assert on them from the fake Twilio log (via `TWILIO_API_BASE`) and the
 harness trace.
 
