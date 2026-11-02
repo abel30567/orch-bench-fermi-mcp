@@ -1,3 +1,11 @@
+import {
+	RUNNER_ENTRY,
+	isSafeRunnerPath,
+	isSha256Hex,
+	isValidRunnerManifest,
+	runnerUrl,
+} from './runner-pin.ts'
+
 export interface FleetConfig {
 	region: string
 	monthly_budget_usd: number
@@ -11,6 +19,8 @@ export interface FleetConfig {
 	/** Supply-chain pin for the box-runner boot download (#34); launch refuses when unset. */
 	runner_ref: string | null
 	runner_sha256: string | null
+	/** Multi-file runner manifest `{ path: sha256 }`; null for a legacy single-file pin. */
+	runner_files: Record<string, string> | null
 	default_ttl_seconds: number
 	max_ttl_seconds: number
 	heartbeat_stale_ms: number
@@ -28,6 +38,7 @@ const DEFAULTS: FleetConfig = {
 	mcp_base_url: null,
 	runner_ref: null,
 	runner_sha256: null,
+	runner_files: null,
 	default_ttl_seconds: 3600,
 	max_ttl_seconds: 4 * 3600,
 	heartbeat_stale_ms: 10 * 60_000,
@@ -148,6 +159,87 @@ export async function updateFleetConfig(
 	} catch {}
 	await env.FERMI_KV.put('fleet:config', JSON.stringify({ ...stored, ...verdict.patch }))
 	return { ok: true, config: verdict.config }
+}
+
+/**
+ * POST /admin/fleet/pin-runner: fetch every runner file at `ref`, hash it, and
+ * store the manifest in fleet:config. `files` is optional (legacy: just
+ * box-runner.mjs); either a list of paths, or a `{ path: sha256 }` manifest
+ * whose hashes must match what the ref actually serves.
+ */
+export async function pinRunner(
+	env: Env,
+	body: { ref?: unknown; files?: unknown },
+): Promise<{ status: number; body: Record<string, unknown> }> {
+	const bad = (error: string) => ({ status: 400, body: { ok: false, error } })
+	const ref = body?.ref
+	if (typeof ref !== 'string' || !/^[0-9a-f]{7,40}$/.test(ref))
+		return bad('ref must be a commit sha')
+
+	let paths: string[]
+	let expected: Record<string, string> | null = null
+	const files = body.files
+	if (files === undefined || files === null) {
+		paths = [RUNNER_ENTRY]
+	} else if (Array.isArray(files)) {
+		if (!files.every(isSafeRunnerPath) || new Set(files).size !== files.length)
+			return bad('files must be unique relative paths')
+		if (!files.includes(RUNNER_ENTRY)) return bad(`files must include ${RUNNER_ENTRY}`)
+		paths = files
+	} else if (typeof files === 'object') {
+		const entries = Object.entries(files as Record<string, unknown>)
+		if (!entries.every(([p, sha]) => isSafeRunnerPath(p) && isSha256Hex(sha)))
+			return bad('files must map relative paths to sha256 hex')
+		if (!Object.hasOwn(files, RUNNER_ENTRY)) return bad(`files must include ${RUNNER_ENTRY}`)
+		expected = files as Record<string, string>
+		paths = Object.keys(expected)
+	} else {
+		return bad('files must be a list of paths or a { path: sha256 } manifest')
+	}
+
+	const fetched = await Promise.all(
+		paths.map(async (path) => {
+			const res = await fetch(runnerUrl(ref, path))
+			if (!res.ok) return { path, error: `fetch_${res.status}` }
+			const bytes = await res.arrayBuffer()
+			const digest = await crypto.subtle.digest('SHA-256', bytes)
+			const sha256 = [...new Uint8Array(digest)]
+				.map((x) => x.toString(16).padStart(2, '0'))
+				.join('')
+			return { path, sha256, bytes: bytes.byteLength }
+		}),
+	)
+	const manifest: Record<string, string> = {}
+	let total = 0
+	for (const f of fetched) {
+		if ('error' in f) return { status: 502, body: { ok: false, error: f.error, path: f.path } }
+		if (expected && expected[f.path] !== f.sha256)
+			return {
+				status: 409,
+				body: { ok: false, error: 'hash_mismatch', path: f.path, sha256: f.sha256 },
+			}
+		manifest[f.path] = f.sha256
+		total += f.bytes
+	}
+	if (!isValidRunnerManifest(manifest)) return bad('invalid manifest')
+
+	const raw = await env.FERMI_KV.get('fleet:config')
+	let stored: Record<string, unknown> = {}
+	try {
+		stored = raw ? JSON.parse(raw) : {}
+	} catch {}
+	const sha256 = manifest[RUNNER_ENTRY]
+	await env.FERMI_KV.put(
+		'fleet:config',
+		JSON.stringify({
+			...stored,
+			runner_ref: ref,
+			runner_sha256: sha256,
+			// A legacy pin clears any earlier manifest so the two never disagree.
+			runner_files: files === undefined || files === null ? null : manifest,
+		}),
+	)
+	return { status: 200, body: { ok: true, ref, sha256, files: manifest, bytes: total } }
 }
 
 export function hourlyRate(instanceType: string): number {
