@@ -46,6 +46,58 @@ export function seedStatements(fixture, now = Date.now()) {
 			)
 		}
 	}
+	if (fixture.history) out.push(...historyStatements(fixture, now))
+	return out
+}
+
+const CHANNELS = ['tg', 'wa', 'dc', 'sl']
+
+/**
+ * Conversation history for one chat, written to the same rows the channel
+ * webhooks write via logChannelMessage (src/lib/conversation.ts): one open
+ * `sessions` row with host `<channel>:<chat_id>` (getOrCreateChannelSession
+ * picks it up for later turns), and one `messages` row per turn (the FTS
+ * triggers index them for session_search). Each turn is stamped
+ * `minutes_ago` before seed time. The chat's previous history is cleared.
+ * `sender` is the inbound sender id; production logs DM turns without it, so
+ * it is validated but does not change the rows.
+ */
+function historyStatements(fixture, now) {
+	const { channel, chat_id: chatId, sender, history } = fixture
+	if (!CHANNELS.includes(channel)) {
+		throw new Error(`history: channel must be one of ${CHANNELS.join(', ')}, got ${channel}`)
+	}
+	if (typeof chatId !== 'string' || !chatId) throw new Error('history: chat_id is required')
+	if (sender !== undefined && typeof sender !== 'string') {
+		throw new Error('history: sender must be a string')
+	}
+	if (!Array.isArray(history)) throw new Error('history: must be an array of turns')
+	const turns = history.map((t, i) => {
+		if (t.role !== 'user' && t.role !== 'assistant') {
+			throw new Error(`history[${i}]: role must be user or assistant`)
+		}
+		if (typeof t.text !== 'string') throw new Error(`history[${i}]: text must be a string`)
+		if (typeof t.minutes_ago !== 'number' || !(t.minutes_ago >= 0)) {
+			throw new Error(`history[${i}]: minutes_ago must be a number >= 0`)
+		}
+		return { ...t, created_at: Math.round(now - t.minutes_ago * 60_000) }
+	})
+	const host = sql(`${channel}:${chatId}`)
+	const out = [
+		`DELETE FROM messages WHERE session_id IN (SELECT id FROM sessions WHERE host = ${host})`,
+		`DELETE FROM sessions WHERE host = ${host}`,
+	]
+	if (turns.length === 0) return out
+	const sessionId = sql(crypto.randomUUID())
+	const startedAt = Math.min(...turns.map((t) => t.created_at))
+	out.push(
+		`INSERT INTO sessions (id, host, mode, started_at) VALUES (${sessionId}, ${host}, 'chat', ${startedAt})`,
+	)
+	for (const t of turns) {
+		out.push(
+			`INSERT INTO messages (session_id, role, body, created_at) VALUES (${sessionId}, ${sql(t.role)}, ${sql(t.text)}, ${t.created_at})`,
+		)
+	}
 	return out
 }
 
@@ -61,6 +113,9 @@ export const DUMP_QUERIES = {
 	skills:
 		'SELECT slug, name, description, keywords, allowed_tools, version, source, decayed_at FROM skills ORDER BY slug',
 	audit: 'SELECT * FROM audit ORDER BY id',
+	// Channel chats only (host `<channel>:<chat_id>`), not MCP session tool logs.
+	history: `SELECT s.host, m.role, m.body, m.created_at FROM messages m JOIN sessions s ON m.session_id = s.id
+		WHERE substr(s.host, 1, 3) IN ('tg:', 'wa:', 'dc:', 'sl:') ORDER BY s.host, m.created_at, m.id`,
 }
 
 /** Shape rows (one array per DUMP_QUERIES entry, same order) like a fixture. */
@@ -69,6 +124,13 @@ export function shapeDump(rowSets) {
 	const dump = Object.fromEntries(names.map((name, i) => [name, rowSets[i] ?? []]))
 	dump.profile = Object.fromEntries(dump.profile.map((r) => [r.name, r.body]))
 	dump.memories = dump.memories.map((m) => ({ ...m, pinned: m.pinned === 1 }))
+	dump.history = dump.history.map(({ host, role, body, created_at }) => ({
+		channel: host.slice(0, 2),
+		chat_id: host.slice(3),
+		role,
+		text: body,
+		created_at,
+	}))
 	return dump
 }
 
