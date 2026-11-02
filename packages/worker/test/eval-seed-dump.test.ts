@@ -1,14 +1,15 @@
 import { env } from 'cloudflare:test'
 import { beforeAll, describe, expect, it } from 'vitest'
 import { DUMP_QUERIES, seedStatements, shapeDump } from '../scripts/eval-db.mjs'
+import historyFixture from './fixtures/eval/phone-history.json'
 import fixture from './fixtures/eval/sample.json'
 import { applyMigrations } from './setup-d1.ts'
 
 // eval-seed.mjs / eval-dump.mjs run these same statements through
 // `wrangler d1 execute --local`; here they run against the test D1.
-async function seed(f: unknown) {
+async function seed(f: unknown, now?: number) {
 	const db = env.FERMI_DB
-	await db.batch(seedStatements(f).map((s: string) => db.prepare(s)))
+	await db.batch(seedStatements(f, now).map((s: string) => db.prepare(s)))
 }
 
 async function dump() {
@@ -40,7 +41,24 @@ describe('eval seed/dump', () => {
 			'schedules',
 			'skills',
 			'audit',
+			'history',
 		])
+	})
+
+	it('round-trips conversation history', async () => {
+		const seededAt = Date.now()
+		await seed(historyFixture, seededAt)
+		const out = await dump()
+		expect(out.history).toEqual(
+			historyFixture.history.map((t) => ({
+				channel: historyFixture.channel,
+				chat_id: historyFixture.chat_id,
+				role: t.role,
+				text: t.text,
+				created_at: seededAt - t.minutes_ago * 60_000,
+			})),
+		)
+		expect(out.tasks.map((t: { id: string }) => t.id)).toEqual(['eval-task-redial'])
 	})
 
 	it('re-seeding replaces rows instead of appending, including migration-seeded ones', async () => {
